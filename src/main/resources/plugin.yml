@@ -1,0 +1,7 @@
+name: Basketball
+version: '${version}'
+main: me.x_tias.partix.Partix
+api-version: '1.21'
+depend:
+  - ProtocolLib
+  - PlaceholderAPI

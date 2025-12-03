@@ -1,0 +1,14 @@
+# Basketball Plugin Configuration
+# This config is used by BettingManager and other systems
+
+# Betting Games Configuration
+# Add your betting game configurations here
+betting:
+  enabled: true
+  games: []
+
+# General Settings
+settings:
+  debug: false
+
+
