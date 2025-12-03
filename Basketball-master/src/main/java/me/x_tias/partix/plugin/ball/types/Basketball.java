@@ -79,6 +79,7 @@ public class Basketball
     private int dunkMeterAccuracy = 0;
     private int dunkMeterWait = 0;
     private int passDelay = 0;
+    private int catchDelay = 0; // NEW: Delay after catching ball
     private UUID justDunkedPlayer = null; // Track who just completed a dunk attempt
     private boolean dunkMeterForward = true;
     private boolean isDunkAttempt = false;
@@ -692,8 +693,9 @@ public class Basketball
         GoalGame.Team shooterTeam = game.getTeamOf(shooter);
         if (shooterTeam == null) return 0.0;
 
-        double highestContest = 0.0;
-        final double baseContestRadius = 6.0; // Increased from 5.0 for more range from front
+        // NEW: Track ALL defender contest values to stack them
+        List<Double> defenderContests = new ArrayList<>();
+        final double baseContestRadius = 6.0;
 
         for (Player onlinePlayer : shooter.getWorld().getPlayers()) {
             GoalGame.Team onlinePlayerTeam = game.getTeamOf(onlinePlayer);
@@ -757,18 +759,48 @@ public class Basketball
                         }
                     }
 
-                    // Calculate final contest value
+                    // Calculate final contest value for THIS defender
                     double contestValue = baseContest * directionalMultiplier * heightMultiplier;
 
-                    if (contestValue > highestContest) {
-                        highestContest = contestValue;
+                    // NEW: Add to list instead of just tracking highest
+                    if (contestValue > 0.1) { // Only count meaningful contests (10%+)
+                        defenderContests.add(contestValue);
                     }
                 }
             }
         }
 
+        // NEW: STACKING LOGIC - Multiple defenders compound contest
+        if (defenderContests.isEmpty()) {
+            return 0.0;
+        }
+
+        // Sort contests from highest to lowest
+        defenderContests.sort(Collections.reverseOrder());
+
+        double totalContest = 0.0;
+
+        if (defenderContests.size() == 1) {
+            // Single defender - full contest value
+            totalContest = defenderContests.get(0);
+        } else {
+            // Multiple defenders - primary defender gets full value
+            totalContest = defenderContests.get(0);
+
+            // Secondary defenders add diminishing value
+            for (int i = 1; i < defenderContests.size(); i++) {
+                // Each additional defender adds 50% of their contest value
+                // This stacks but with diminishing returns
+                double additionalContest = defenderContests.get(i) * 0.5;
+                totalContest += additionalContest;
+
+                System.out.println("Defender #" + (i + 1) + " adding " +
+                        String.format("%.1f%%", additionalContest * 100) + " contest (stacked)");
+            }
+        }
+
         // Cap contest at 1.0 (100%)
-        return Math.min(highestContest, 1.0);
+        return Math.min(totalContest, 1.0);
     }
 
     public void forceThrow() {
@@ -785,6 +817,10 @@ public class Basketball
     }
 
     public boolean pass(Player player) {
+        if (this.catchDelay > 0) {
+            player.playSound(player.getLocation(), Sound.ENTITY_ARMOR_STAND_BREAK, SoundCategory.MASTER, 100.0f, 1.0f);
+            return false;
+        }
         if (this.delay < 1 && this.passDelay < 1 && this.getCurrentDamager() != null && this.getCurrentDamager().equals(player)) {
             Location location = player.getEyeLocation().clone();
             location.subtract(0.0, 0.5, 0.0);
@@ -1113,6 +1149,7 @@ public class Basketball
                 this.stealImmunityTicks = 20;
                 this.setStealDelay(10);
                 this.delay = 10;
+                this.catchDelay = 10;
                 this.accuracy = 0;
                 this.threeEligible = false;
                 player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_ATTACK_SWEEP, SoundCategory.MASTER, 100.0f, 1.2f);
@@ -1398,6 +1435,7 @@ public class Basketball
                 }
                 player.playSound(player.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1.0f, 1.0f);
                 this.passDelay = 10;
+                this.catchDelay = 10;
             }
 
             player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, 10, 1));
@@ -1576,6 +1614,8 @@ public class Basketball
         // CLEAR justDunkedPlayer flag when someone picks up the ball
         // This prevents "travel after dunk" when rebounding after a made dunk
         this.justDunkedPlayer = null;
+        this.catchDelay = 10;
+
 
         // CRITICAL FIX FOR POKE POSSESSION:
         // When ball was poked, we need to handle possession carefully
@@ -1674,6 +1714,10 @@ public class Basketball
         }
         if (this.passDelay > 0) {
             --this.passDelay;
+        }
+        // NEW: Decrement catch delay
+        if (this.catchDelay > 0) {
+            --this.catchDelay;
         }
     }
 

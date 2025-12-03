@@ -1345,7 +1345,7 @@ public class BasketballGame
                             } else if (distance < 3.5) {
                                 shotType = "WITH THE LAYUP!";
                             } else if (distance < 5.0) {
-                                shotType = "IN THE PAINT!";
+                                shotType = "INT HE PAINT!";
                             } else if (distance < 7.0) {
                                 shotType = "WITH THE MID-RANGE JUMPER!";
                             } else {
