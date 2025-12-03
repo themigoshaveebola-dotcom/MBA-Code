@@ -1316,26 +1316,89 @@ public class BasketballGame
                 }
                 int n = score = team.equals(Team.HOME) ? this.homeScore : this.awayScore;
                 if (this.getState().equals(State.REGULATION) || !this.settings.suddenDeath || !this.settings.winType.timed && score + (isThree ? 3 : 2) >= this.settings.winType.amount) {
-                    this.sendTitle(t.name.append(Component.text(isThree ? " ‣ 3 Points!" : " ‣ 2 Points").color(Colour.partix())));
+
+                    // NEW: Generate dynamic scoring message based on shot type
+                    Component scoringMessage;
                     if (scorer != null) {
+                        String scorerName = scorer.getName();
+                        Location scorerLoc = scorer.getLocation();
+                        Location hoopLoc = team.equals(Team.HOME) ?
+                                this.getAwayNet().getCenter().toLocation(scorer.getWorld()) :
+                                this.getHomeNet().getCenter().toLocation(scorer.getWorld());
+
+                        double distance = scorerLoc.distance(hoopLoc);
+                        double heightDiff = scorerLoc.getY() - hoopLoc.getY();
+
+                        String shotType;
+
+                        if (isThree) {
+                            // Three-pointer messages
+                            if (distance > 8.0) {
+                                shotType = "FROM DOWNTOWN!";
+                            } else {
+                                shotType = "FOR 3!";
+                            }
+                        } else {
+                            // Two-pointer messages based on distance and height
+                            if (distance < 3.0 && heightDiff > 1.5) {
+                                shotType = "DUNKED THE BALL!";
+                            } else if (distance < 3.5) {
+                                shotType = "WITH THE LAYUP!";
+                            } else if (distance < 5.0) {
+                                shotType = "IN THE PAINT!";
+                            } else if (distance < 7.0) {
+                                shotType = "WITH THE MID-RANGE JUMPER!";
+                            } else {
+                                shotType = "WITH THE LONG TWO!";
+                            }
+                        }
+
+                        scoringMessage = Component.text(scorerName + " " + shotType)
+                                .color(team.equals(Team.HOME) ? TextColor.color(0x00AAFF) : TextColor.color(0xFFAA00))
+                                .decorate(TextDecoration.BOLD);
+
                         AthleteManager.get(scorer.getUniqueId()).getExplosion().mediumExplosion(ball2.getLocation());
+                    } else {
+                        // Fallback if no scorer identified
+                        scoringMessage = t.name.append(Component.text(isThree ? " ‣ 3 Points!" : " ‣ 2 Points").color(Colour.partix()));
                     }
+
+                    this.sendTitle(scoringMessage);
+
+                    // NEW: Get center X coordinate for halfcourt line
+                    double centerX = this.getCenter().getX();
+
                     if (team.equals(Team.HOME)) {
                         this.homeScore += isThree ? 3 : 2;
-                        Vector v = new Vector(1.25, -1.5, 0.0);
-                        this.getHomePlayers().stream().filter(player -> player.getLocation().getX() < this.getCenter().getX()).forEach(player -> {
-                            player.teleport(player.getLocation().clone().set(this.getCenter().clone().getX(), player.getLocation().getY(), player.getLocation().getZ()));
-                            player.setVelocity(v);
-                        });
+
+                        // NEW: Teleport HOME players back to their defensive half (left side)
+                        // Only teleport players who are on the offensive side (right side)
+                        this.getHomePlayers().stream()
+                                .filter(player -> player.getLocation().getX() > centerX) // Players on offensive side
+                                .forEach(player -> {
+                                    Location defensivePosition = player.getLocation().clone();
+                                    defensivePosition.setX(centerX - 1.0); // 1 block on their defensive side
+                                    player.teleport(defensivePosition);
+                                });
+
+                        // Ball spawn for away team
                         ball2.setLocation(this.getAwaySpawn().add(0, 1.2, -6));
                         ball2.setVelocity(0, 0.05, 0.0);
+
                     } else {
                         this.awayScore += isThree ? 3 : 2;
-                        Vector v = new Vector(-1.25, -1.5, 0.0);
-                        this.getAwayPlayers().stream().filter(player -> player.getLocation().getX() > this.getCenter().getX()).forEach(player -> {
-                            player.teleport(player.getLocation().clone().set(this.getCenter().clone().getX(), player.getLocation().getY(), player.getLocation().getZ()));
-                            player.setVelocity(v);
-                        });
+
+                        // NEW: Teleport AWAY players back to their defensive half (right side)
+                        // Only teleport players who are on the offensive side (left side)
+                        this.getAwayPlayers().stream()
+                                .filter(player -> player.getLocation().getX() < centerX) // Players on offensive side
+                                .forEach(player -> {
+                                    Location defensivePosition = player.getLocation().clone();
+                                    defensivePosition.setX(centerX + 1.0); // 1 block on their defensive side
+                                    player.teleport(defensivePosition);
+                                });
+
+                        // Ball spawn for home team
                         ball2.setLocation(this.getHomeSpawn().clone().add(0, 1.2, 6));
                         ball2.setVelocity(0, 0.05, 0.0);
                     }
