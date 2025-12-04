@@ -1687,11 +1687,69 @@ public class BasketballGame
         }
     }
 
+// Add this method to your BasketballGame class
+
     public void outOfBounds() {
         Ball ball = getBall();
         if (ball == null) return;
         if (outOfBoundsImmunity) {
             System.out.println("Out of bounds immunity is active, skipping out of bounds handling.");
+            return;
+        }
+
+        // NEW: Check if this is a 1v1 ranked game - if so, skip inbound sequence
+        boolean is1v1Ranked = (this.settings.compType == CompType.RANKED &&
+                this.getHomePlayers().size() == 1 &&
+                this.getAwayPlayers().size() == 1);
+
+        if (is1v1Ranked) {
+            System.out.println("1v1 Ranked detected - skipping inbound sequence, spawning ball directly");
+            removeBalls();
+
+            // Determine who should get the ball using same logic as normal OOB
+            Player lastPossessor = null;
+            boolean wasBallPoked = false;
+            if (ball instanceof Basketball basketball) {
+                UUID lastPossessorUUID = basketball.getTrueLastPossessor();
+                wasBallPoked = basketball.wasPoked;
+                if (lastPossessorUUID != null) {
+                    lastPossessor = Bukkit.getPlayer(lastPossessorUUID);
+                }
+            }
+
+            Team ballTeam;
+            if (lastPossessor != null) {
+                Team lastPossessorTeam;
+                if (getHomePlayers().contains(lastPossessor)) {
+                    lastPossessorTeam = Team.HOME;
+                } else if (getAwayPlayers().contains(lastPossessor)) {
+                    lastPossessorTeam = Team.AWAY;
+                } else {
+                    lastPossessorTeam = Team.HOME;
+                }
+
+                if (wasBallPoked) {
+                    ballTeam = lastPossessorTeam;
+                } else {
+                    ballTeam = (lastPossessorTeam == Team.HOME) ? Team.AWAY : Team.HOME;
+                }
+            } else {
+                ballTeam = Team.HOME;
+            }
+
+            // Spawn ball at the player's location who should get it
+            Player ballOwner = ballTeam == Team.HOME ? this.getHomePlayers().get(0) : this.getAwayPlayers().get(0);
+            Location spawnLoc = ballOwner.getLocation().clone().add(0, 1.5, 0);
+            Ball newBall = this.setBall(BallFactory.create(spawnLoc, BallType.BASKETBALL, this));
+            newBall.setStealDelay(0);
+
+            this.resetShotClock();
+            this.sendTitle(Component.text("Out of Bounds: " + (ballTeam == Team.HOME ? "Home Ball" : "Away Ball"))
+                    .style(Style.style(Colour.deny(), TextDecoration.BOLD)));
+
+            if (ball instanceof Basketball basketball) {
+                basketball.clearPokeFlags();
+            }
             return;
         }
 
@@ -1790,7 +1848,7 @@ public class BasketballGame
             return;
         }
 
-// Spawn ball at inbound spot THEN set immunity AND start timer
+        // Spawn ball at inbound spot THEN set immunity AND start timer
         Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
             Ball newBall = setBall(BallFactory.create(finalInboundSpot, BallType.BASKETBALL, this));
             newBall.setStealDelay(0);
