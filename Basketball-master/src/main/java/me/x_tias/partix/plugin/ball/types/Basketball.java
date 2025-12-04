@@ -611,6 +611,11 @@ public class Basketball
             return false;
         }
 
+        // CRITICAL: Don't allow collision steals from the inbounder during inbound sequences
+        if (this.game.inboundingActive && ballHandler.equals(this.game.inbounder)) {
+            return false;
+        }
+
         // Check if defender is on the ground (collision steals only work on ground)
         if (!defender.isOnGround()) {
             return false;
@@ -1149,7 +1154,7 @@ public class Basketball
                 this.stealImmunityTicks = 20;
                 this.setStealDelay(10);
                 this.delay = 10;
-                this.catchDelay = 10;
+                this.catchDelay = 20;
                 this.accuracy = 0;
                 this.threeEligible = false;
                 player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_ATTACK_SWEEP, SoundCategory.MASTER, 100.0f, 1.2f);
@@ -1435,7 +1440,7 @@ public class Basketball
                 }
                 player.playSound(player.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1.0f, 1.0f);
                 this.passDelay = 10;
-                this.catchDelay = 10;
+                this.catchDelay = 20;
             }
 
             player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, 10, 1));
@@ -1571,7 +1576,7 @@ public class Basketball
             }
         }
 
-        // ===== NEW: COLLISION STEAL LOGIC =====
+        // ===== COLLISION STEAL LOGIC - MOVED UP AND FIXED =====
         // When defender collides with offensive player carrying the ball
         if (this.getCurrentDamager() != null && this.getCurrentDamager().isOnGround()) {
             Player ballHandler = this.getCurrentDamager();
@@ -1584,9 +1589,21 @@ public class Basketball
                     !player.equals(ballHandler) &&
                     defenderTeam != GoalGame.Team.SPECTATOR) {
 
+                // CRITICAL: Don't allow collision steals during inbound sequences
+                if (game.inboundingActive && ballHandler.equals(game.inbounder)) {
+                    // Inbounder is protected - no collision steal allowed
+                    return false;
+                }
+
                 // Attempt collision steal
                 if (this.attemptCollisionSteal(player)) {
-                    return false; // Don't give possession, steal was successful
+                    // CRITICAL: After successful steal, don't give possession yet
+                    // The ball is now loose on the ground
+                    return false;
+                } else {
+                    // Steal was NOT successful - defender just bounced off
+                    // Don't give possession to defender
+                    return false;
                 }
             }
         }
@@ -1598,10 +1615,9 @@ public class Basketball
             return true;
         }
 
-        // Ball handler exists - just give possession
-        this.setDamager(player);
-        this.stealImmunityTicks = 20;
-        return true;
+        // If we reach here, there's a ball handler but collision steal wasn't attempted
+        // (shouldn't happen, but be safe)
+        return false;
     }
 
     @Override
@@ -1614,7 +1630,7 @@ public class Basketball
         // CLEAR justDunkedPlayer flag when someone picks up the ball
         // This prevents "travel after dunk" when rebounding after a made dunk
         this.justDunkedPlayer = null;
-        this.catchDelay = 10;
+        this.catchDelay = 20;
 
 
         // CRITICAL FIX FOR POKE POSSESSION:
@@ -1736,7 +1752,80 @@ public class Basketball
     public void markReboundEligible() {
         this.reboundEligible = true;
     }
+    private void checkBackboardCollision() {
+        // Only check during shots (ball in air, no damager)
+        if (this.getCurrentDamager() != null) {
+            return; // Not in flight
+        }
 
+        Location ballLoc = this.getLocation();
+        if (ballLoc == null || ballLoc.getWorld() == null) {
+            return;
+        }
+
+        // Get both hoop locations and calculate backboard positions
+        Location homeHoopCenter = this.game.getHomeNet().getCenter().toLocation(ballLoc.getWorld());
+        Location awayHoopCenter = this.game.getAwayNet().getCenter().toLocation(ballLoc.getWorld());
+
+        // Backboard positions (behind the rims)
+        // Home net backboard is at +Z
+        Location homeBackboard = homeHoopCenter.clone().add(0, 0.5, 1.2);
+
+        // Away net backboard is at -Z
+        Location awayBackboard = awayHoopCenter.clone().add(0, 0.5, -1.2);
+
+        double backboardThickness = 0.3; // Collision thickness
+        double backboardRadius = 1.0; // How far from center to detect collision
+
+        // Check home backboard collision
+        if (isCollisionWithBackboard(ballLoc, homeBackboard, backboardThickness, backboardRadius)) {
+            handleBackboardBounce(ballLoc, homeBackboard);
+            return;
+        }
+
+        // Check away backboard collision
+        if (isCollisionWithBackboard(ballLoc, awayBackboard, backboardThickness, backboardRadius)) {
+            handleBackboardBounce(ballLoc, awayBackboard);
+            return;
+        }
+    }
+
+    private boolean isCollisionWithBackboard(Location ballLoc, Location backboardLoc, double thickness, double radius) {
+        // Check if ball is within the backboard collision zone
+        double distX = Math.abs(ballLoc.getX() - backboardLoc.getX());
+        double distY = Math.abs(ballLoc.getY() - backboardLoc.getY());
+        double distZ = Math.abs(ballLoc.getZ() - backboardLoc.getZ());
+
+        // Backboard collision box: thin in Z direction, wide in X and Y
+        return distX <= radius && distY <= radius && distZ <= thickness;
+    }
+
+    private void handleBackboardBounce(Location ballLoc, Location backboardLoc) {
+        // Get current velocity
+        Vector velocity = this.getVelocity().clone();
+
+        // Determine which direction to bounce based on ball position relative to backboard
+        double relativeZ = ballLoc.getZ() - backboardLoc.getZ();
+
+        // Reverse Z velocity (bounce off backboard)
+        if (Math.abs(relativeZ) < 0.15) {
+            // Ball is hitting the backboard directly
+            velocity.setZ(-velocity.getZ() * 0.6); // Reverse with dampening
+        }
+
+        // Reduce other velocity components slightly
+        velocity.setX(velocity.getX() * 0.85);
+        velocity.setY(Math.max(velocity.getY() * 0.9, -0.3)); // Keep some downward momentum
+
+        // Apply bounced velocity
+        this.setVelocity(velocity);
+
+        // Play sound effect
+        this.getLocation().getWorld().playSound(this.getLocation(),
+                Sound.BLOCK_WOOD_HIT, SoundCategory.MASTER, 0.7f, 0.9f);
+
+        System.out.println("Backboard collision detected - ball bounced!");
+    }
     private void detectReboundPickup() {
         if (!this.game.getState().equals(GoalGame.State.REGULATION)) {
             return;
@@ -2029,6 +2118,7 @@ public class Basketball
         this.detectMissedShotBySlab();
         this.checkSlabZone();
         this.runDelay();
+        this.checkBackboardCollision();
         this.handleLayupBackboardBounce();
     }
     private void nextDunkMeterAccuracy() {

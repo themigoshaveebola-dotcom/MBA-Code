@@ -117,6 +117,7 @@ public class BasketballGame
     private BukkitTask timeoutTask = null;
     private int timeoutSecs = 0;
     private final boolean shotClockFrozen = false;
+    private boolean justScored = false; // NEW: Track if a goal just happened
     private boolean shotAttemptDetected = false;
     private boolean shotClockStopped = false;
     private boolean shotClockFrozenForInbound = false;
@@ -179,7 +180,8 @@ public class BasketballGame
     @Override
     public void resetStats() {
         this.statsManager.resetStats();
-        this.lastReboundTime.clear(); // Add this line
+        this.lastReboundTime.clear();
+        this.justScored = false; // NEW: Clear flag
 
         for (Player p : this.getHomePlayers()) {
             p.sendMessage(Component.text("Your stats have been reset.").color(Colour.allow()));
@@ -356,12 +358,34 @@ public class BasketballGame
         this.resetShotClock();
         this.setState(GoalGame.State.STOPPAGE);
         this.cancelInboundSequence();
+
+        // NEW: Set immunity BEFORE spawning the ball
+        this.setOutOfBoundsImmunity(true);
+
         new BukkitRunnable() {
 
             public void run() {
+                // Spawn the ball FIRST with immunity active
+                Location inboundSpot = BasketballGame.this.getCenter().clone();
+                inboundSpot.setY(inboundSpot.getY() + 1.2);
+
+                Ball newBall = BasketballGame.this.setBall(
+                        BallFactory.create(inboundSpot, BallType.BASKETBALL, BasketballGame.this)
+                );
+                newBall.setStealDelay(0);
+
+                System.out.println("DEBUG: Ball spawned at inbound spot with immunity active");
+
+                // THEN call endTimeout which will set up the proper inbound sequence
                 BasketballGame.this.endTimeout(next);
+
+                // Remove immunity after a short delay to allow normal play
+                Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                    BasketballGame.this.setOutOfBoundsImmunity(false);
+                    System.out.println("DEBUG: Out of bounds immunity removed");
+                }, 10L);
             }
-        }.runTaskLater(Partix.getInstance(), 100L);
+        }.runTaskLater(Partix.getInstance(), 20L);
     }
 
     public void dropInboundBarrierButKeepClockFrozen() {
@@ -373,18 +397,26 @@ public class BasketballGame
 
 
     private void resumePlay() {
+        System.out.println("DEBUG: resumePlay() called");
         this.inboundingActive = false;
-        this.inboundPassTime = 0L; // CLEAR THIS
+        this.inbounder = null;
+        this.inboundTouchedByInbounder = false;
+        this.inbounderHasReleased = false;
+        this.inboundPassTime = 0L;
+
         if (this.inboundBarrierTask != null) {
             this.inboundBarrierTask.cancel();
             this.inboundBarrierTask = null;
         }
+
         if (this.inboundTimer != null) {
             this.inboundTimer.cancel();
             this.inboundTimer = null;
         }
+
         this.setState(GoalGame.State.REGULATION);
         this.shotClockStopped = false;
+        System.out.println("DEBUG: State set to REGULATION, inbound sequence ended");
     }
 
     private void updatePossessionTime() {
@@ -484,10 +516,15 @@ public class BasketballGame
             newBall.setStealDelay(0);
         }, 30L);
 
-        this.sendTitle(Component.text("Shot Clock Violation: " +
-                (inboundingTeam == Team.HOME ? "Home Ball" : "Away Ball")).style(
-                Style.style(Colour.deny(), TextDecoration.BOLD)
-        ));
+// NEW: Only show OOB message if not immediately after scoring
+        if (!this.justScored) {
+            sendTitle(Component.text("Out of Bounds: " +
+                    (this.inboundingTeam == Team.HOME ? "Home Ball" : "Away Ball")).style(
+                    Style.style(Colour.deny(), TextDecoration.BOLD)
+            ));
+        } else {
+            System.out.println("OOB after scoring - suppressing message");
+        }
 
         this.lastPossessionTeam = null;
         this.resetShotClock();
@@ -529,33 +566,58 @@ public class BasketballGame
     public void onTick() {
         super.onTick();
         this.tickArea();
+
+        // IMPROVED INBOUND DETECTION
         if (this.inboundingActive) {
-            Player holder;
-            Player player = holder = this.getBall() != null ? this.getBall().getCurrentDamager() : null;
+            Ball ball = this.getBall();
+
+            // If no ball exists, keep waiting
+            if (ball == null) {
+                return;
+            }
+
+            Player ballHolder = ball.getCurrentDamager();
+
+            // STEP 1: Wait for inbounder to touch the ball
             if (!this.inboundTouchedByInbounder) {
-                if (holder != null && holder.equals(this.inbounder)) {
+                if (ballHolder != null && ballHolder.equals(this.inbounder)) {
+                    System.out.println("DEBUG: Inbounder touched ball");
                     this.inboundTouchedByInbounder = true;
                 }
+                return; // Keep waiting
+            }
+
+            // STEP 2: After inbounder touches ball, wait for them to pass it
+            if (ballHolder == null) {
+                // Ball is in flight (inbounder passed it)
+                System.out.println("DEBUG: Ball in flight after inbound pass");
                 return;
             }
-            if (this.inboundTouchedByInbounder && holder == null) {
-                return;
-            }
-            if (holder != null && !holder.equals(this.inbounder)) {
-                this.resumePlay();
-                if (this.inboundTimer != null) {
-                    this.inboundTimer.cancel();
-                    this.inboundTimer = null;
+
+            // STEP 3: A teammate caught the pass - END INBOUND SEQUENCE
+            if (ballHolder != null && !ballHolder.equals(this.inbounder)) {
+                // Check if catcher is on the same team as inbounder
+                GoalGame.Team inbounderTeam = this.inboundingTeam;
+                GoalGame.Team catcherTeam = this.getTeamOf(ballHolder);
+
+                if (inbounderTeam != null && catcherTeam != null && inbounderTeam.equals(catcherTeam)) {
+                    // Teammate caught it - RESUME PLAY
+                    System.out.println("DEBUG: Teammate " + ballHolder.getName() + " caught inbound pass - RESUMING PLAY");
+                    this.resumePlay();
+                    if (this.inboundTimer != null) {
+                        this.inboundTimer.cancel();
+                        this.inboundTimer = null;
+                    }
+                    return;
                 }
-                return;
             }
-            return;
         }
+
+        // Normal gameplay updates
         this.updateShotClock();
         this.updateActionBarShotClock();
         this.updatePossessionTime();
     }
-
     private void pregameGoalDetection() {
     }
 
@@ -1345,7 +1407,7 @@ public class BasketballGame
                             } else if (distance < 3.5) {
                                 shotType = "WITH THE LAYUP!";
                             } else if (distance < 5.0) {
-                                shotType = "INT HE PAINT!";
+                                shotType = "IN THE PAINT!";
                             } else if (distance < 7.0) {
                                 shotType = "WITH THE MID-RANGE JUMPER!";
                             } else {
@@ -1365,42 +1427,70 @@ public class BasketballGame
 
                     this.sendTitle(scoringMessage);
 
+// NEW: Set flag to suppress OOB message after scoring
+                    this.justScored = true;
+
+// NEW: Clear flag after 2 seconds (40 ticks)
+                    Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                        this.justScored = false;
+                    }, 40L);
+
                     // NEW: Get center X coordinate for halfcourt line
                     double centerX = this.getCenter().getX();
 
                     if (team.equals(Team.HOME)) {
                         this.homeScore += isThree ? 3 : 2;
 
-                        // NEW: Teleport HOME players back to their defensive half (left side)
-                        // Only teleport players who are on the offensive side (right side)
-                        this.getHomePlayers().stream()
-                                .filter(player -> player.getLocation().getX() > centerX) // Players on offensive side
-                                .forEach(player -> {
-                                    Location defensivePosition = player.getLocation().clone();
-                                    defensivePosition.setX(centerX - 1.0); // 1 block on their defensive side
-                                    player.teleport(defensivePosition);
-                                });
+                        // NEW: Teleport HOME players back to their spawn (defensive half)
+                        // Teleport ALL players, not just those on offensive side
+                        for (Player player : this.getHomePlayers()) {
+                            if (player != null && player.isOnline()) {
+                                Location spawnLoc = this.getHomeSpawn().clone();
+                                spawnLoc.setX(spawnLoc.getX() - 3.0); // Move them away from basket
+                                player.teleport(spawnLoc);
+                                System.out.println("DEBUG: Teleported " + player.getName() + " to home defensive position");
+                            }
+                        }
+
+                        // NEW: Set immunity BEFORE spawning ball out of bounds
+                        this.setOutOfBoundsImmunity(true);
 
                         // Ball spawn for away team
                         ball2.setLocation(this.getAwaySpawn().add(0, 1.2, -6));
                         ball2.setVelocity(0, 0.05, 0.0);
 
+                        // NEW: Remove immunity after 1 second (20 ticks) so inbound can be triggered
+                        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                            this.setOutOfBoundsImmunity(false);
+                            System.out.println("DEBUG: Out of bounds immunity removed after scoring");
+                        }, 20L);
+
                     } else {
                         this.awayScore += isThree ? 3 : 2;
 
-                        // NEW: Teleport AWAY players back to their defensive half (right side)
-                        // Only teleport players who are on the offensive side (left side)
-                        this.getAwayPlayers().stream()
-                                .filter(player -> player.getLocation().getX() < centerX) // Players on offensive side
-                                .forEach(player -> {
-                                    Location defensivePosition = player.getLocation().clone();
-                                    defensivePosition.setX(centerX + 1.0); // 1 block on their defensive side
-                                    player.teleport(defensivePosition);
-                                });
+                        // NEW: Teleport AWAY players back to their spawn (defensive half)
+                        // Teleport ALL players, not just those on offensive side
+                        for (Player player : this.getAwayPlayers()) {
+                            if (player != null && player.isOnline()) {
+                                Location spawnLoc = this.getAwaySpawn().clone();
+                                spawnLoc.setX(spawnLoc.getX() + 3.0); // Move them away from basket
+                                player.teleport(spawnLoc);
+                                System.out.println("DEBUG: Teleported " + player.getName() + " to away defensive position");
+                            }
+                        }
+
+                        // NEW: Set immunity BEFORE spawning ball out of bounds
+                        this.setOutOfBoundsImmunity(true);
 
                         // Ball spawn for home team
                         ball2.setLocation(this.getHomeSpawn().clone().add(0, 1.2, 6));
                         ball2.setVelocity(0, 0.05, 0.0);
+
+                        // NEW: Remove immunity after 1 second (20 ticks) so inbound can be triggered
+                        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                            this.setOutOfBoundsImmunity(false);
+                            System.out.println("DEBUG: Out of bounds immunity removed after scoring");
+                        }, 20L);
                     }
                 } else {
                     if (team.equals(Team.HOME)) {
@@ -1561,9 +1651,16 @@ public class BasketballGame
 
         final Location blockLoc = this.getBall().getLocation().clone();
 
-        // Check for out of bounds
+        // Check for out of bounds - BUT NOT DURING STOPPAGE OR WHEN IMMUNITY IS ACTIVE
         if (!this.getArenaBox().contains(blockLoc.getX(), blockLoc.getY(), blockLoc.getZ())) {
             System.out.println("OUT OF BOUNDS - Ball detected outside arena");
+            System.out.println("DEBUG: State=" + this.getState() + ", Immunity=" + this.outOfBoundsImmunity);
+
+            // Skip OOB during stoppage, timeouts, or when immunity is active
+            if (this.getState().equals(State.STOPPAGE) || this.outOfBoundsImmunity || this.justScored) {
+                System.out.println("DEBUG: Skipping OOB detection (STOPPAGE or IMMUNITY)");
+                return;
+            }
 
             // If inbound is active and within 1 second grace period, DON'T trigger OOB
             if (this.inboundingActive && this.inboundPassTime > 0L) {
