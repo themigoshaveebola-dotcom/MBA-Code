@@ -47,7 +47,31 @@ public class Basketball
     public boolean isShouldPreventScore() {
         return this.shouldPreventScore;
     }
+    @Getter
+    private PassMode passMode = PassMode.BULLET; // Default to bullet pass
+
+    // Add this enum at the end of the Basketball class:
+    public enum PassMode {
+        BULLET("Bullet Pass"),
+        LOB("Lob Pass");
+
+        private final String displayName;
+
+        PassMode(String displayName) {
+            this.displayName = displayName;
+        }
+
+        public String getDisplayName() {
+            return displayName;
+        }
+
+        public PassMode toggle() {
+            return this == BULLET ? LOB : BULLET;
+        }
+    }
+
     private boolean perfectShot = false;
+    public boolean layupScored = false; // NEW: Track if this layup already scored
     private boolean layupScoreDetected = false;
     private boolean guaranteedMiss = false;
     private boolean shouldPreventScore = false;
@@ -92,7 +116,7 @@ public class Basketball
     private int handModifier = 5;
     private int hesiDelay = 0;
     private UUID lastShotBlockerUUID = null;
-    private boolean isLayupAttempt = false;
+    public boolean isLayupAttempt = false;
     private boolean hesiActive = false;
     private int hesiAnimationTicks = 0;
     private int btbDelay = 0;
@@ -185,6 +209,9 @@ public class Basketball
         // Reset layup scoring flag on new shot attempt
         this.layupScoreDetected = false;
         this.isLayupAttempt = false;
+        this.shouldPreventScore = false;
+        this.layupScored = false; // NEW: Reset scored flag
+
 
         float pitch = Math.min(145.0f, Math.max(90.0f, 90.0f + Math.abs(player.getLocation().getPitch()))) - 90.0f;
         this.setLocation(player.getEyeLocation().add(player.getLocation().getDirection().multiply(1.425)));
@@ -369,7 +396,6 @@ public class Basketball
             player.sendMessage(Component.text(shotTypeText).color(color));
         }
 
-        // LAYUP LOGIC: All layups use bezier curve to backboard (same as perfect shots)
         if (this.isLayupAttempt) {
             player.sendMessage(Component.text("Layup!").color(Colour.allow()));
 
@@ -381,8 +407,9 @@ public class Basketball
 
             Location currentLoc = playerLoc.clone();
             Location backboard = getBackboardLocation(player);
+            final Location rimTarget = targetHoop.clone();
 
-            // Create bezier curve from player to backboard
+            // Create bezier curve from player to BACKBOARD
             double midX = (currentLoc.getX() + backboard.getX()) / 2;
             double midY = Math.max(currentLoc.getY(), backboard.getY()) + 2.0; // Arc over to backboard
             double midZ = (currentLoc.getZ() + backboard.getZ()) / 2;
@@ -395,10 +422,31 @@ public class Basketball
 
             new BukkitRunnable() {
                 int index = 0;
+
                 @Override
                 public void run() {
+                    // When bezier curve completes, ball has reached backboard
                     if (index >= bezierPoints.size() || !isValid()) {
                         setLocked(false);
+
+                        // Play backboard sound
+                        getLocation().getWorld().playSound(getLocation(), Sound.BLOCK_WOOD_HIT, SoundCategory.MASTER, 0.8f, 0.9f);
+
+                        if (perfectShot) {
+                            // GREEN LAYUP - Bounce from backboard toward rim (goes in)
+                            Location hoopTarget = rimTarget.clone();
+                            hoopTarget.setY(rimTarget.getY() - 0.5); // Below rim so it goes through
+                            Vector toHoop = hoopTarget.toVector().subtract(getLocation().toVector()).normalize();
+                            setVelocity(toHoop.multiply(0.35), -0.05); // Soft arc into rim
+                        } else {
+                            // MISSED LAYUP - Bounce away from rim
+                            Vector awayFromHoop = getLocation().toVector().subtract(rimTarget.toVector()).normalize();
+                            awayFromHoop.setX(awayFromHoop.getX() + (Math.random() - 0.5) * 0.3);
+                            awayFromHoop.setZ(awayFromHoop.getZ() + (Math.random() - 0.5) * 0.3);
+                            setVelocity(awayFromHoop.multiply(0.4), 0.2);
+                        }
+
+                        isLayupAttempt = false;
                         cancel();
                         return;
                     }
@@ -412,6 +460,8 @@ public class Basketball
             }.runTaskTimer(Partix.getInstance(), 1L, 1L);
 
             this.lastOwnerUUID = player.getUniqueId();
+
+
 
         } else if (this.perfectShot) {
             player.sendMessage("Perfect shot");
@@ -428,6 +478,8 @@ public class Basketball
             setLocked(true);
             new BukkitRunnable() {
                 int index = 0;
+                Location previousLoc = null;
+
                 @Override
                 public void run() {
                     if (index >= bezierPoints.size() || !isValid()) {
@@ -436,13 +488,31 @@ public class Basketball
                         return;
                     }
 
+                    Location nextLoc = bezierPoints.get(index);
+
+                    // Check backboard collision for perfect shots too
+                    if (previousLoc != null) {
+                        Location backboard = getBackboardLocation(player);
+                        if (doesPathCrossBackboard(previousLoc, nextLoc, backboard)) {
+                            // Hit backboard - bounce toward rim
+                            setLocked(false);
+                            Vector toHoop = targetHoop.toVector().subtract(nextLoc.toVector()).normalize();
+                            toHoop.setY(-0.15);
+                            setVelocity(toHoop.multiply(0.4));
+                            cancel();
+                            return;
+                        }
+                    }
+
                     int amountToIncrement = Math.max(4, (index / 25) + 1);
 
                     setVelocity(new Vector());
-                    endPhysics(bezierPoints.get(index));
+                    endPhysics(nextLoc);
+                    previousLoc = nextLoc.clone();
                     index += amountToIncrement;
                 }
             }.runTaskTimer(Partix.getInstance(), 1L, 1L);
+
 
         } else if (this.guaranteedMiss) {
             player.sendMessage(Component.text("Bad Shot Attempt").color(Colour.deny()));
@@ -830,17 +900,42 @@ public class Basketball
             Location location = player.getEyeLocation().clone();
             location.subtract(0.0, 0.5, 0.0);
             Vector direction = player.getLocation().getDirection().clone();
+
             if (player.isSneaking()) {
                 direction.setX(-direction.getX());
                 direction.setZ(-direction.getZ());
             }
-            double passSpeed = 0.915;
+
+            // DIFFERENT PASS SPEEDS BASED ON MODE
+            double passSpeed;
+            double verticalComponent;
+
+            if (this.passMode == PassMode.BULLET) {
+                // Bullet pass: Normal speed, normal arc
+                passSpeed = 0.915;
+                verticalComponent = 0.09;
+            } else {
+                // Lob pass: FIXED - Check if player is throwing at HIGH angle (upward)
+                // Negative pitch = looking up, Positive pitch = looking down
+                if (player.getLocation().getPitch() < -20) { // CHANGED: was > -20, now < -20
+                    passSpeed = 0.65; // Slower for lob
+                    verticalComponent = 0.3; // Higher arc
+                } else {
+                    // Can't throw a lob pass downward
+                    player.sendActionBar(Component.text("Lob passes must be thrown upward!").color(NamedTextColor.RED));
+                    player.playSound(player.getLocation(), Sound.ENTITY_ARMOR_STAND_BREAK, SoundCategory.MASTER, 100.0f, 1.0f);
+                    return false;
+                }
+            }
+
             if (this.game.getCourtLength() == 32.0) {
                 passSpeed *= 1.1;
             }
+
             this.setLocation(location.add(direction.clone().multiply(0.45)));
-            this.setVelocity(player, direction.clone().multiply(passSpeed), 0.09);
-            System.out.println("SET VELOCITY 12");
+            this.setVelocity(player, direction.clone().multiply(passSpeed), verticalComponent);
+            System.out.println("SET VELOCITY 12 (" + this.passMode.getDisplayName() + ")");
+
             this.game.startAssistTimer(player.getUniqueId());
 
             // NEW: Notify game if inbounder is passing
@@ -852,9 +947,11 @@ public class Basketball
             if (this.game.getState().equals(GoalGame.State.REGULATION) || this.game.getState().equals(GoalGame.State.OVERTIME)) {
                 this.game.getStatsManager().getPlayerStats(player.getUniqueId()).incrementPassAttempts();
             }
+
             this.giveaway();
             this.threeEligible = false;
             this.delay = 5;
+
             if (this.game.inboundingActive && player.equals(this.game.inbounder)) {
                 this.game.dropInboundBarrierButKeepClockFrozen();
             }
@@ -862,6 +959,7 @@ public class Basketball
         }
         return false;
     }
+
 
     public boolean canDunk(Player player) {
         Location location = this.getTargetHoop(player).clone();
@@ -1625,39 +1723,54 @@ public class Basketball
         this.game.setStepbacked(null);
         super.setDamager(player);
         this.setCurrentDamager(player);
-        this.shouldPreventScore = false; // Reset flag on new possession
-
-        // CLEAR justDunkedPlayer flag when someone picks up the ball
-        // This prevents "travel after dunk" when rebounding after a made dunk
+        this.shouldPreventScore = false;
         this.justDunkedPlayer = null;
         this.catchDelay = 20;
 
+        // NEW: Reset pass mode to BULLET when picking up ball
+        this.passMode = PassMode.BULLET;
+        player.sendActionBar(Component.text("Pass Mode: ").color(NamedTextColor.WHITE)
+                .append(Component.text(this.passMode.getDisplayName()).color(NamedTextColor.GREEN)));
 
         // CRITICAL FIX FOR POKE POSSESSION:
-        // When ball was poked, we need to handle possession carefully
         if (this.wasPoked && this.lastPossessionBeforePoke != null) {
-            // Check if this player is picking up their OWN poked ball (victim recovering)
             if (player.getUniqueId().equals(this.lastPossessionBeforePoke)) {
-                // Victim recovered their own ball - this is TRUE possession change
                 this.lastPossessorUUID = player.getUniqueId();
-                // Clear poke flags - normal possession now
                 this.wasPoked = false;
                 this.lastPossessionBeforePoke = null;
                 System.out.println(player.getName() + " recovered their own poked ball - possession changed");
             } else {
-                // Defender (poker) picked up the ball
-                // Update current possession BUT keep lastPossessionBeforePoke for OOB
                 this.lastPossessorUUID = player.getUniqueId();
-                // DON'T clear wasPoked or lastPossessionBeforePoke yet!
-                // This way getTrueLastPossessor() will return the victim if ball goes OOB
                 System.out.println(player.getName() + " (poker) picked up poked ball - victim still has OOB possession");
             }
         } else {
-            // Normal possession change - no poke involved
             this.lastPossessorUUID = player.getUniqueId();
             this.wasPoked = false;
             this.lastPossessionBeforePoke = null;
         }
+
+        // NEW: If inbounder just picked up the ball during inbound, disable immunity immediately
+        if (this.game.inboundingActive && player.equals(this.game.inbounder)) {
+            this.game.setOutOfBoundsImmunity(false);
+            System.out.println("Inbounder picked up ball - OUT OF BOUNDS IMMUNITY DISABLED");
+        }
+    }
+
+    // ===== ADD THIS METHOD TO TOGGLE PASS MODE: =====
+    public void togglePassMode(Player player) {
+        if (this.getCurrentDamager() == null || !this.getCurrentDamager().equals(player)) {
+            return;
+        }
+
+        this.passMode = this.passMode.toggle();
+
+        // REMOVED: The action bar display that was conflicting with shot clock
+        // Just play a sound to confirm the toggle
+        player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, SoundCategory.MASTER, 0.5f, 1.0f);
+
+        // Optional: Send a subtle message instead (less intrusive than action bar)
+        player.sendMessage(Component.text("Pass Mode: ").color(NamedTextColor.WHITE)
+                .append(Component.text(this.passMode.getDisplayName()).color(NamedTextColor.GREEN)));
     }
 
     private void detectTravel() {
@@ -1752,6 +1865,29 @@ public class Basketball
     public void markReboundEligible() {
         this.reboundEligible = true;
     }
+
+    private boolean isLocationBehindBackboard(Location ballLoc, Player shooter) {
+        Location backboard = getBackboardLocation(shooter);
+        Location targetHoop = getTargetHoop(shooter);
+        Location centerCourt = this.game.getCenter();
+
+        // Determine which direction is "behind" the backboard
+        boolean isAwayNet = targetHoop.getZ() < centerCourt.getZ();
+
+        double backboardZ = backboard.getZ();
+        double ballZ = ballLoc.getZ();
+        double hoopZ = targetHoop.getZ();
+
+        // Check if ball is on the wrong side of the backboard
+        if (isAwayNet) {
+            // Away net: backboard is at lower Z, ball shouldn't go below it
+            return ballZ < (backboardZ - 0.2); // 0.2 tolerance
+        } else {
+            // Home net: backboard is at higher Z, ball shouldn't go above it
+            return ballZ > (backboardZ + 0.2); // 0.2 tolerance
+        }
+    }
+
     private void checkBackboardCollision() {
         // Only check during shots (ball in air, no damager)
         if (this.getCurrentDamager() != null) {
@@ -1768,25 +1904,50 @@ public class Basketball
         Location awayHoopCenter = this.game.getAwayNet().getCenter().toLocation(ballLoc.getWorld());
 
         // Backboard positions (behind the rims)
-        // Home net backboard is at +Z
         Location homeBackboard = homeHoopCenter.clone().add(0, 0.5, 1.2);
-
-        // Away net backboard is at -Z
         Location awayBackboard = awayHoopCenter.clone().add(0, 0.5, -1.2);
 
-        double backboardThickness = 0.3; // Collision thickness
-        double backboardRadius = 1.0; // How far from center to detect collision
+        double backboardThickness = 0.5; // INCREASED from 0.3
+        double backboardRadius = 1.2; // INCREASED from 1.0
 
         // Check home backboard collision
         if (isCollisionWithBackboard(ballLoc, homeBackboard, backboardThickness, backboardRadius)) {
+            // CRITICAL: Check if ball is going THROUGH backboard (not bouncing off front)
+            if (isBallGoingThroughBackboard(ballLoc, homeBackboard, homeHoopCenter)) {
+                // Stop the ball completely
+                this.setVelocity(new Vector(0, -0.5, 0)); // Just drop it
+                return;
+            }
             handleBackboardBounce(ballLoc, homeBackboard);
             return;
         }
 
         // Check away backboard collision
         if (isCollisionWithBackboard(ballLoc, awayBackboard, backboardThickness, backboardRadius)) {
+            if (isBallGoingThroughBackboard(ballLoc, awayBackboard, awayHoopCenter)) {
+                this.setVelocity(new Vector(0, -0.5, 0));
+                return;
+            }
             handleBackboardBounce(ballLoc, awayBackboard);
             return;
+        }
+    }
+
+    private boolean isBallGoingThroughBackboard(Location ballLoc, Location backboardLoc, Location hoopLoc) {
+        // Check if ball is behind the backboard (on wrong side)
+        double ballZ = ballLoc.getZ();
+        double backboardZ = backboardLoc.getZ();
+        double hoopZ = hoopLoc.getZ();
+
+        // If backboard is between ball and hoop, ball is on correct side
+        // If ball is between backboard and "behind", ball went through
+
+        if (hoopZ > backboardZ) {
+            // Home net: hoop is at higher Z than backboard
+            return ballZ > backboardZ + 0.3; // Ball is behind backboard
+        } else {
+            // Away net: hoop is at lower Z than backboard
+            return ballZ < backboardZ - 0.3; // Ball is behind backboard
         }
     }
 
@@ -2217,6 +2378,62 @@ public class Basketball
         }
     }
 
+    private boolean doesPathCrossBackboard(Location from, Location to, Location backboardCenter) {
+        // Determine backboard orientation based on court setup
+        double centerZ = this.game.getCenter().getZ();
+        double backboardZ = backboardCenter.getZ();
+
+        // Check if backboard is perpendicular to Z axis
+        boolean isZBackboard = Math.abs(backboardZ - centerZ) > 0.5;
+
+        if (!isZBackboard) {
+            return false; // Shouldn't happen in standard courts
+        }
+
+        // Get the Z coordinates of the path segment
+        double fromZ = from.getZ();
+        double toZ = to.getZ();
+
+        // Check if segment crosses the backboard plane
+        boolean crosses = (fromZ < backboardZ && toZ > backboardZ) ||
+                (fromZ > backboardZ && toZ < backboardZ);
+
+        if (!crosses) return false;
+
+        // Calculate intersection point with backboard plane
+        double t = (backboardZ - fromZ) / (toZ - fromZ);
+        double intersectX = from.getX() + t * (to.getX() - from.getX());
+        double intersectY = from.getY() + t * (to.getY() - from.getY());
+
+        // Check if intersection is within backboard bounds (1.2 block radius for safety)
+        double distX = Math.abs(intersectX - backboardCenter.getX());
+        double distY = Math.abs(intersectY - backboardCenter.getY());
+
+        return distX <= 1.2 && distY <= 1.2;
+    }
+    private void handleLayupBackboardHit(Player shooter, Location hitLocation) {
+        setLocked(false);
+        this.isLayupAttempt = false;
+
+        // Play backboard sound
+        hitLocation.getWorld().playSound(hitLocation, Sound.BLOCK_WOOD_HIT, SoundCategory.MASTER, 0.8f, 0.9f);
+
+        if (this.perfectShot) {
+            // GREEN LAYUP - Bounce off backboard toward rim
+            Location targetHoop = this.getTargetHoop(shooter);
+            Vector toHoop = targetHoop.toVector().subtract(hitLocation.toVector()).normalize();
+            toHoop.setY(-0.15); // Slight downward angle toward rim
+            this.setVelocity(toHoop.multiply(0.4));
+        } else {
+            // MISSED LAYUP - Bounce off backboard away from hoop
+            Location targetHoop = this.getTargetHoop(shooter);
+            Vector awayFromHoop = hitLocation.toVector().subtract(targetHoop.toVector()).normalize();
+            awayFromHoop.setX(awayFromHoop.getX() + (Math.random() - 0.5) * 0.3);
+            awayFromHoop.setZ(awayFromHoop.getZ() + (Math.random() - 0.5) * 0.3);
+            this.setVelocity(awayFromHoop.multiply(0.4), 0.2);
+        }
+    }
+
     @Override
     protected void setCurrentDamager(Player player) {
         super.setCurrentDamager(player);
@@ -2502,17 +2719,20 @@ public class Basketball
     }
 
     public UUID getTrueLastPossessor() {
-        // If shot was blocked, the BLOCKER gets OOB possession (not the shooter)
+        // If shot was blocked, the SHOOTER gets OOB possession (not the blocker)
         if (this.lastShotBlockerUUID != null) {
-            Player blocker = Bukkit.getPlayer(this.lastShotBlockerUUID);
-            if (blocker != null) {
-                System.out.println("Shot was blocked - blocker's team gets OOB possession: " + blocker.getName());
-                return blocker.getUniqueId(); // ← CHANGED: Return blocker UUID instead of shooter UUID
+            // The blocker UUID is stored, but we need to return the SHOOTER's UUID
+            // The shooter is the lastPossessorUUID (person who shot before block)
+            if (this.lastPossessorUUID != null) {
+                Player shooter = Bukkit.getPlayer(this.lastPossessorUUID);
+                if (shooter != null) {
+                    System.out.println("Shot was blocked - shooter's team gets OOB possession: " + shooter.getName());
+                    return this.lastPossessorUUID; // ← FIXED: Return shooter UUID
+                }
             }
         }
 
         // If ball was poked, return who had it BEFORE the poke (the victim)
-        // This ensures the victim's team gets the ball back on out-of-bounds
         if (this.wasPoked && this.lastPossessionBeforePoke != null) {
             System.out.println("Ball was poked - true last possessor (victim) is: " + Bukkit.getPlayer(this.lastPossessionBeforePoke).getName());
             return this.lastPossessionBeforePoke;

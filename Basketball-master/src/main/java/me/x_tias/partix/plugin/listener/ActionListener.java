@@ -42,6 +42,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.inventory.InventoryInteractEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -126,6 +127,27 @@ public class ActionListener
             return;
         }
         e.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onSwapHands(PlayerSwapHandItemsEvent event) {
+        Player player = event.getPlayer();
+
+        for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
+            if (!(ball instanceof Basketball basketball)) {
+                continue;
+            }
+
+            // Verify player is the current damager (has possession)
+            if (basketball.getCurrentDamager() == null || !basketball.getCurrentDamager().equals(player)) {
+                continue;
+            }
+
+            // Cancel the swap hands event and toggle pass mode instead
+            event.setCancelled(true);
+            basketball.togglePassMode(player);
+            break;
+        }
     }
 
     @EventHandler

@@ -1284,6 +1284,18 @@ public class BasketballGame
                     return; // Exit early - don't allow scoring
                 }
 
+                // NEW: Prevent multiple layup scores
+                if (ball2.isLayupAttempt && ball2.layupScored) {
+                    System.out.println("Layup already scored - preventing duplicate");
+                    return;
+                }
+
+                // NEW: Mark layup as scored immediately
+                if (ball2.isLayupAttempt) {
+                    ball2.layupScored = true;
+                    System.out.println("Layup scored - marking as complete");
+                }
+
                 // ===== KEEP THIS: REBOUND MACHINE LOGIC (PREGAME ONLY) =====
                 if (this.settings.reboundMachineEnabled && this.getState().equals(State.PREGAME)) {
                     Player scorer = ball2.getLastDamager();
@@ -1430,7 +1442,6 @@ public class BasketballGame
 // NEW: Set flag to suppress OOB message after scoring
                     this.justScored = true;
 
-// NEW: Clear flag after 2 seconds (40 ticks)
                     Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
                         this.justScored = false;
                     }, 40L);
@@ -1455,15 +1466,16 @@ public class BasketballGame
                         // NEW: Set immunity BEFORE spawning ball out of bounds
                         this.setOutOfBoundsImmunity(true);
 
-                        // Ball spawn for away team
-                        ball2.setLocation(this.getAwaySpawn().add(0, 1.2, -6));
+                        // Ball spawn for away team - MUST CLONE
+                        Location awayInboundSpot = this.getAwaySpawn().clone().add(0, 1.2, -6);
+                        ball2.setLocation(awayInboundSpot);
                         ball2.setVelocity(0, 0.05, 0.0);
 
-                        // NEW: Remove immunity after 1 second (20 ticks) so inbound can be triggered
+                        // NEW: Remove immunity after 7 seconds (140 ticks) so inbound sequence starts properly
                         Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
                             this.setOutOfBoundsImmunity(false);
                             System.out.println("DEBUG: Out of bounds immunity removed after scoring");
-                        }, 20L);
+                        }, 140L);
 
                     } else {
                         this.awayScore += isThree ? 3 : 2;
@@ -1482,15 +1494,16 @@ public class BasketballGame
                         // NEW: Set immunity BEFORE spawning ball out of bounds
                         this.setOutOfBoundsImmunity(true);
 
-                        // Ball spawn for home team
-                        ball2.setLocation(this.getHomeSpawn().clone().add(0, 1.2, 6));
+                        // Ball spawn for home team - MUST CLONE
+                        Location homeInboundSpot = this.getHomeSpawn().clone().add(0, 1.2, 6);
+                        ball2.setLocation(homeInboundSpot);
                         ball2.setVelocity(0, 0.05, 0.0);
 
-                        // NEW: Remove immunity after 1 second (20 ticks) so inbound can be triggered
+                        // NEW: Remove immunity after 7 seconds (140 ticks) so inbound sequence starts properly
                         Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
                             this.setOutOfBoundsImmunity(false);
                             System.out.println("DEBUG: Out of bounds immunity removed after scoring");
-                        }, 20L);
+                        }, 140L);
                     }
                 } else {
                     if (team.equals(Team.HOME)) {
