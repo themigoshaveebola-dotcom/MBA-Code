@@ -74,6 +74,7 @@ public class BasketballLobby
     private final List<Athlete> queue1v1 = new ArrayList<>();
     private final List<Location> myCourts = new ArrayList<>();
     private final List<Location> rankedCourts = new ArrayList<>();
+    private final List<Location> rankedHalfCourts = new ArrayList<>();
     @Getter
     private final List<Location> defaultArenas = new ArrayList<>();
     private final List<Stadium> stadiums = new ArrayList<>();
@@ -96,6 +97,10 @@ public class BasketballLobby
         this.rankedCourts.add(new Location(Bukkit.getWorlds().getFirst(), -24.5, -61, 196.5));
         this.rankedCourts.add(new Location(Bukkit.getWorlds().getFirst(), -24.5, -61, 111.5));
         this.rankedCourts.add(new Location(Bukkit.getWorlds().getFirst(), 42.5, -61, 111.5));
+
+        this.rankedHalfCourts.add(new Location(Bukkit.getWorlds().getFirst(), 145.5, -61, 413.5));
+        this.rankedHalfCourts.add(new Location(Bukkit.getWorlds().getFirst(), 145.5, -61, 328.5));
+
 
         this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 285.5, -62, -509.5));
         this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), -226.5, -62, -509.5));
@@ -148,6 +153,40 @@ public class BasketballLobby
         }
         Location randomLoc = freeRecCourts.get(new Random().nextInt(freeRecCourts.size()));
         BasketballGame game = new BasketballGame(this.recSettings, randomLoc, 32.0, 2.8, 0.45, 0.475, 0.575);
+        this.games.put(randomLoc, game);
+        return game;
+    }
+
+    public BasketballGame findAvailableHalfCourt() {
+        ArrayList<Location> freeHalfCourts = new ArrayList<>(this.rankedHalfCourts);
+        freeHalfCourts.removeAll(this.games.keySet());
+
+        if (freeHalfCourts.isEmpty()) {
+            return null;
+        }
+
+        Location randomLoc = freeHalfCourts.get(new Random().nextInt(freeHalfCourts.size()));
+
+        // CREATE CUSTOM SETTINGS FOR 1V1: FIRST TO 21 WITH WIN BY 2
+        Settings oneVOneSettings = new Settings(
+                WinType.FIRST_TO,        // Use FIRST_TO enum (not TIME_5)
+                GameType.AUTOMATIC,
+                WaitType.SHORT,
+                CompType.RANKED,
+                2,                       // playersPerTeam = 1 (means 2 total: 1v1)
+                true,                    // Shot clock enabled (12 seconds)
+                false,
+                false,
+                1,
+                GameEffectType.NONE
+        );
+
+        // Set first to 21 with win by 2 rule
+        oneVOneSettings.winType.amount = 21;
+        oneVOneSettings.winType.winByTwo = true;
+
+        BasketballGame game = new BasketballGame(oneVOneSettings, randomLoc, 13.0, 2.8, 0.45, 0.475, 0.575);
+
         this.games.put(randomLoc, game);
         return game;
     }
@@ -726,7 +765,7 @@ public class BasketballLobby
         int requiredPlayers;
         if (mode == 1) {
             requiredPlayers = 2;
-            game = this.findAvailableRankedCourt();
+            game = this.findAvailableHalfCourt();
         } else if (mode == 2) {
             requiredPlayers = 4;
             game = this.findAvailableRankedCourt();

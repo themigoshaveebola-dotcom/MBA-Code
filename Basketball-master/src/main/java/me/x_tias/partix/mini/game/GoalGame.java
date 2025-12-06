@@ -1478,7 +1478,6 @@ public abstract class GoalGame
             });
             Ball newBall = this.setBall(BallFactory.create(this.getHomeSpawn(), this.getBallType(), this));
             newBall.setVelocity(0.05, 0.05, 0.0);
-            System.out.println("SET VELOCITY 7");
         } else if (ballSide == Team.AWAY) {
             Vector pushVelocity = new Vector(1.25, -1.5, 0.0);
             this.getHomePlayers().stream().filter(p -> p.getLocation().getX() < this.getCenter().getX()).forEach(p -> {
@@ -1487,7 +1486,6 @@ public abstract class GoalGame
             });
             Ball newBall = this.setBall(BallFactory.create(this.getAwaySpawn(), this.getBallType(), this));
             newBall.setVelocity(-0.05, 0.05, 0.0);
-            System.out.println("SET VELOCITY 8");
         }
         this.updateDisplay();
     }

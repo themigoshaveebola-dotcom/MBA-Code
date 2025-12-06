@@ -118,6 +118,13 @@ public class BasketballGame
     private int timeoutSecs = 0;
     private final boolean shotClockFrozen = false;
     private boolean justScored = false; // NEW: Track if a goal just happened
+    private boolean isSingleHoopMode;
+    private boolean isHalfCourt1v1;
+    private boolean needsPositionReset = false;
+    private long resetStartTime = 0L;
+    private static final long RESET_DELAY = 3000L;
+    private UUID offensivePlayer = null;
+    private UUID defensivePlayer = null;
     private boolean shotAttemptDetected = false;
     private boolean shotClockStopped = false;
     private boolean shotClockFrozenForInbound = false;
@@ -168,6 +175,14 @@ public class BasketballGame
         this.courtLength = xDistance;
         this.location = location.clone();
 
+        // Detect 1v1 half-court
+        this.isHalfCourt1v1 = (xDistance == 13.0 && settings.playersPerTeam == 1);
+        this.isSingleHoopMode = this.isHalfCourt1v1;
+
+        if (this.isHalfCourt1v1) {
+            Bukkit.getLogger().info("✓ Half-court 1v1 detected - First to 21 with Win by 2");
+        }
+
         this.homeJump = this.getJumpBox(this.getHomeSpawn());
         this.awayJump = this.getJumpBox(this.getAwaySpawn());
     }
@@ -203,13 +218,147 @@ public class BasketballGame
         this.statsManager.resetStats();
     }
 
-    @Override
     public void resetShotClock() {
-        this.shotClockTicks = 480;
+        if (this.isHalfCourt1v1) {
+            this.shotClockTicks = 240;  // 12 seconds
+        } else {
+            this.shotClockTicks = 480;  // 24 seconds
+        }
+
         this.shotClockStopped = false;
         this.shotAttemptDetected = false;
         this.shotAttemptTeam = null;
-        this.lastPossessionTeam = null;
+    }
+    private void resetHalfCourt1v1Positions() {
+        if (!this.isHalfCourt1v1) {
+            return;
+        }
+
+        Player offensivePlayer = null;
+        Player defensivePlayer = null;
+
+        // Determine who has possession
+        if (this.getBall() != null) {
+            Player ballHolder = this.getBall().getCurrentDamager();
+
+            if (ballHolder != null) {
+                offensivePlayer = ballHolder;
+
+                List<Player> allPlayers = new ArrayList<>();
+                allPlayers.addAll(this.getHomePlayers());
+                allPlayers.addAll(this.getAwayPlayers());
+
+                for (Player p : allPlayers) {
+                    if (!p.equals(offensivePlayer)) {
+                        defensivePlayer = p;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fallback
+        if (offensivePlayer == null || defensivePlayer == null) {
+            if (!this.getHomePlayers().isEmpty() && !this.getAwayPlayers().isEmpty()) {
+                offensivePlayer = this.getHomePlayers().get(0);
+                defensivePlayer = this.getAwayPlayers().get(0);
+            } else {
+                return;
+            }
+        }
+
+        this.removeBalls();
+
+        Location homeHoopCenter = this.getHomeNet().getCenter().toLocation(offensivePlayer.getWorld());
+        Location centerOfCourt = this.getCenter().clone();
+
+        double direction = homeHoopCenter.getZ() > centerOfCourt.getZ() ? 1.0 : -1.0;
+
+        // Offensive player at half-court + 1-2 blocks
+        Location offensiveSpawn = centerOfCourt.clone();
+        offensiveSpawn.setZ(centerOfCourt.getZ() + (1.5 * direction));
+        offensiveSpawn.setX(homeHoopCenter.getX());
+
+        World world = offensivePlayer.getWorld();
+        int groundY = world.getHighestBlockYAt((int) offensiveSpawn.getX(), (int) offensiveSpawn.getZ());
+        offensiveSpawn.setY(groundY + 1.0);
+
+        // Defensive player at 3-point line
+        Location defensiveSpawn = offensiveSpawn.clone();
+        defensiveSpawn.setZ(offensiveSpawn.getZ() - (6.5 * direction));
+
+        int defGroundY = world.getHighestBlockYAt((int) defensiveSpawn.getX(), (int) defensiveSpawn.getZ());
+        defensiveSpawn.setY(defGroundY + 1.0);
+
+        offensivePlayer.teleport(offensiveSpawn);
+        defensivePlayer.teleport(defensiveSpawn);
+
+        this.sendTitle(Component.text("RESET").color(Colour.partix()).decorate(TextDecoration.BOLD));
+
+        this.needsPositionReset = true;
+        this.resetStartTime = System.currentTimeMillis();
+        this.offensivePlayer = offensivePlayer.getUniqueId();
+        this.defensivePlayer = defensivePlayer.getUniqueId();
+    }
+
+    private void handleHalfCourt1v1Reset() {
+        if (!this.isHalfCourt1v1 || !this.needsPositionReset) {
+            return;
+        }
+
+        long timeSinceReset = System.currentTimeMillis() - this.resetStartTime;
+
+        if (timeSinceReset < RESET_DELAY) {
+            long remaining = (RESET_DELAY - timeSinceReset) / 1000L;
+            if (remaining >= 0) {
+                Component countdown = Component.text("Ball spawning in " + remaining + "s")
+                        .color(TextColor.color(0xFFFF00));
+                for (Player p : this.getPlayers()) {
+                    p.sendActionBar(countdown);
+                }
+            }
+            return;
+        }
+
+        Player offPlayer = Bukkit.getPlayer(this.offensivePlayer);
+        Player defPlayer = Bukkit.getPlayer(this.defensivePlayer);
+
+        if (offPlayer == null || defPlayer == null) {
+            this.needsPositionReset = false;
+            return;
+        }
+
+        Location ballSpawnLoc = offPlayer.getEyeLocation().clone();
+
+        Ball newBall = this.setBall(BallFactory.create(ballSpawnLoc, BallType.BASKETBALL, this));
+        newBall.setStealDelay(0);
+        newBall.setVelocity(0, 0, 0);
+
+        this.sendTitle(Component.text("PLAY!").color(Colour.allow()).decorate(TextDecoration.BOLD));
+
+
+        this.needsPositionReset = false;
+        this.offensivePlayer = null;
+        this.defensivePlayer = null;
+    }
+
+    private Team determineNextPossession() {
+        if (this.getBall() == null) {
+            return Team.HOME;
+        }
+
+        Player lastPossessor = this.getBall().getCurrentDamager();
+        if (lastPossessor == null) {
+            return Team.HOME;
+        }
+
+        if (this.getHomePlayers().contains(lastPossessor)) {
+            return Team.HOME;
+        } else if (this.getAwayPlayers().contains(lastPossessor)) {
+            return Team.AWAY;
+        }
+
+        return Team.HOME;
     }
 
     public void callTimeout(final GoalGame.Team callingTeam) {
@@ -374,7 +523,6 @@ public class BasketballGame
                 );
                 newBall.setStealDelay(0);
 
-                System.out.println("DEBUG: Ball spawned at inbound spot with immunity active");
 
                 // THEN call endTimeout which will set up the proper inbound sequence
                 BasketballGame.this.endTimeout(next);
@@ -382,7 +530,6 @@ public class BasketballGame
                 // Remove immunity after a short delay to allow normal play
                 Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
                     BasketballGame.this.setOutOfBoundsImmunity(false);
-                    System.out.println("DEBUG: Out of bounds immunity removed");
                 }, 10L);
             }
         }.runTaskLater(Partix.getInstance(), 20L);
@@ -397,7 +544,6 @@ public class BasketballGame
 
 
     private void resumePlay() {
-        System.out.println("DEBUG: resumePlay() called");
         this.inboundingActive = false;
         this.inbounder = null;
         this.inboundTouchedByInbounder = false;
@@ -416,7 +562,6 @@ public class BasketballGame
 
         this.setState(GoalGame.State.REGULATION);
         this.shotClockStopped = false;
-        System.out.println("DEBUG: State set to REGULATION, inbound sequence ended");
     }
 
     private void updatePossessionTime() {
@@ -558,51 +703,47 @@ public class BasketballGame
     }
 
     public void resetShotClockTo12() {
-        this.shotClockTicks = 240;
-        this.buzzerPlayed = false;
+        if (this.isHalfCourt1v1) {
+            this.shotClockTicks = 240;  // 12 seconds for half-court
+            this.buzzerPlayed = false;
+            Bukkit.getLogger().info("Shot clock reset to 12s (half-court 1v1)");
+        } else {
+            this.shotClockTicks = 240;
+            this.buzzerPlayed = false;
+        }
     }
+
 
     @Override
     public void onTick() {
         super.onTick();
         this.tickArea();
 
-        // IMPROVED INBOUND DETECTION
+        // Handle half-court 1v1 position resets
+        if (this.isHalfCourt1v1 && this.needsPositionReset) {
+            this.handleHalfCourt1v1Reset();
+        }
+
+        // INBOUND LOGIC (existing code)
         if (this.inboundingActive) {
             Ball ball = this.getBall();
-
-            // If no ball exists, keep waiting
             if (ball == null) {
                 return;
             }
-
             Player ballHolder = ball.getCurrentDamager();
-
-            // STEP 1: Wait for inbounder to touch the ball
             if (!this.inboundTouchedByInbounder) {
                 if (ballHolder != null && ballHolder.equals(this.inbounder)) {
-                    System.out.println("DEBUG: Inbounder touched ball");
                     this.inboundTouchedByInbounder = true;
                 }
-                return; // Keep waiting
-            }
-
-            // STEP 2: After inbounder touches ball, wait for them to pass it
-            if (ballHolder == null) {
-                // Ball is in flight (inbounder passed it)
-                System.out.println("DEBUG: Ball in flight after inbound pass");
                 return;
             }
-
-            // STEP 3: A teammate caught the pass - END INBOUND SEQUENCE
+            if (ballHolder == null) {
+                return;
+            }
             if (ballHolder != null && !ballHolder.equals(this.inbounder)) {
-                // Check if catcher is on the same team as inbounder
                 GoalGame.Team inbounderTeam = this.inboundingTeam;
                 GoalGame.Team catcherTeam = this.getTeamOf(ballHolder);
-
                 if (inbounderTeam != null && catcherTeam != null && inbounderTeam.equals(catcherTeam)) {
-                    // Teammate caught it - RESUME PLAY
-                    System.out.println("DEBUG: Teammate " + ballHolder.getName() + " caught inbound pass - RESUMING PLAY");
                     this.resumePlay();
                     if (this.inboundTimer != null) {
                         this.inboundTimer.cancel();
@@ -613,7 +754,6 @@ public class BasketballGame
             }
         }
 
-        // Normal gameplay updates
         this.updateShotClock();
         this.updateActionBarShotClock();
         this.updatePossessionTime();
@@ -781,7 +921,6 @@ public class BasketballGame
 
         if (this.lastPossessionTeam != null && currentTeam != this.lastPossessionTeam) {
             this.shotClockTicks = 480;
-            System.out.println("Resetting shot clock");
             this.shotAttemptDetected = false;
             this.shotAttemptTeam = null;
             this.buzzerPlayed = false;
@@ -824,22 +963,34 @@ public class BasketballGame
     @Override
     public void setPregame() {
         World world = this.getCenter().getWorld();
+
+        // ALWAYS create balls at home spawn
         BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, -3.0), this.getBallType(), this);
         BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, -1.5), this.getBallType(), this);
         BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, 1.5), this.getBallType(), this);
         BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, 3.0), this.getBallType(), this);
-        BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, -3.0), this.getBallType(), this);
-        BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, -1.5), this.getBallType(), this);
-        BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, 1.5), this.getBallType(), this);
-        BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, 3.0), this.getBallType(), this);
+
+        // For 1v1: ONLY create balls at home spawn, not away spawn
+        if (!this.isSingleHoopMode) {
+            BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, -3.0), this.getBallType(), this);
+            BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, -1.5), this.getBallType(), this);
+            BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, 1.5), this.getBallType(), this);
+            BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, 3.0), this.getBallType(), this);
+        }
+
+        // Always clear home net
         Block h = this.getHomeNet().clone().getCenter().toLocation(world).getBlock();
         h.getLocation().clone().getBlock().setType(Material.AIR);
         h.getLocation().clone().subtract(0.0, 1.0, 0.0).getBlock().setType(Material.AIR);
-        Block a = this.getAwayNet().clone().getCenter().toLocation(world).getBlock();
-        a.getLocation().clone().getBlock().setType(Material.AIR);
-        a.getLocation().clone().subtract(0.0, 1.0, 0.0).getBlock().setType(Material.AIR);
 
-        // NEW: Start pregame rebound detection task
+        // For 1v1: Don't clear away net (it's not used)
+        // For other modes: Clear away net normally
+        if (!this.isSingleHoopMode) {
+            Block a = this.getAwayNet().clone().getCenter().toLocation(world).getBlock();
+            a.getLocation().clone().getBlock().setType(Material.AIR);
+            a.getLocation().clone().subtract(0.0, 1.0, 0.0).getBlock().setType(Material.AIR);
+        }
+
         startPregameTask();
     }
 
@@ -880,7 +1031,6 @@ public class BasketballGame
         Location spawn = this.getCenter().add(0.0, 1.5 + Math.random() / 1.5, 0.0);
         Ball ball = this.setBall(BallFactory.create(spawn, BallType.BASKETBALL, this));
         ball.setVelocity(0.0, 0.1 + Math.random() / 3.0, new Random().nextBoolean() ? Math.max(0.05 + (0.05 + Math.random()) / 25.0, 0.05) / 3.0 : Math.min(-0.05 + (-0.5 - Math.random()) / 25.0, -0.05) / 3.0);
-        System.out.println("SET VELOCITY 4");
     }
 
     @Override
@@ -889,7 +1039,12 @@ public class BasketballGame
             this.addTime(1);
             return false;
         }
-        this.resetShotClock();
+
+        // Only reset shot clock for timed games
+        if (this.settings.winType.timed) {
+            this.resetShotClock();
+        }
+
         return true;
     }
     public void recordRebound(Player player) {
@@ -1252,6 +1407,16 @@ public class BasketballGame
     @Override
     public void updateDisplay() {
         Object time;
+        if (this.isSingleHoopMode && this.settings.winType.winByTwo) {
+            time = "§fFirst to: §e21";
+        } else if (this.getState().equals(State.REGULATION) || this.getState().equals(State.OVERTIME) || this.getState().equals(State.FACEOFF)) {
+            time = this.getState().equals(State.OVERTIME) ? (this.settings.suddenDeath ? "§fTime: §e0:00" : "§fTime: §e" + this.getGameTime()) : (this.settings.winType.timed ? "§fTime: §e" + this.getGameTime() : "§fFirst to: §e" + this.settings.winType.amount);
+            if (this.getState().equals(State.FACEOFF)) {
+                time = time + " §7(" + this.getCountSeconds() + "s)";
+            }
+        } else {
+            time = this.getState().equals(State.PREGAME) ? "§bPregame" + (this.getCountSeconds() > 0 ? ": §f" + this.getCountSeconds() + "s" : "") : (this.getState().equals(State.FINAL) ? "§cGame Over" + (this.getCountSeconds() > 0 ? ": §f" + this.getCountSeconds() + "s" : "") : "§fStoppage");
+        }
         if (this.getState().equals(State.REGULATION) || this.getState().equals(State.OVERTIME) || this.getState().equals(State.FACEOFF)) {
             time = this.getState().equals(State.OVERTIME) ? (this.settings.suddenDeath ? "§fTime: §e0:00" : "§fTime: §e" + this.getGameTime()) : (this.settings.winType.timed ? "§fTime: §e" + this.getGameTime() : "§fFirst to: §e" + this.settings.winType.amount);
             if (this.getState().equals(State.FACEOFF)) {
@@ -1276,25 +1441,23 @@ public class BasketballGame
     @Override
     public void goal(GoalGame.Team team) {
         Ball ball = this.getBall();
+        if (ball == null) return;
+
         if (ball instanceof Basketball ball2) {
+            // ===== CRITICAL FIX: CHECK LAYUP SCORED FLAG FIRST =====
+            if (ball2.layupScored) {
+                return;
+            }
+            // ===== END CRITICAL FIX =====
+
             if (ball2.getVelocity().getY() < 0.01) {
 
                 if (ball2.isShouldPreventScore()) {
-                    System.out.println("Prevented guaranteed miss from scoring");
-                    return; // Exit early - don't allow scoring
-                }
-
-                // NEW: Prevent multiple layup scores
-                if (ball2.isLayupAttempt && ball2.layupScored) {
-                    System.out.println("Layup already scored - preventing duplicate");
                     return;
                 }
 
-                // NEW: Mark layup as scored immediately
-                if (ball2.isLayupAttempt) {
-                    ball2.layupScored = true;
-                    System.out.println("Layup scored - marking as complete");
-                }
+                // Mark as scored IMMEDIATELY
+                ball2.layupScored = true;
 
                 // ===== KEEP THIS: REBOUND MACHINE LOGIC (PREGAME ONLY) =====
                 if (this.settings.reboundMachineEnabled && this.getState().equals(State.PREGAME)) {
@@ -1346,6 +1509,105 @@ public class BasketballGame
                 }
                 // ===== END REBOUND MACHINE LOGIC =====
 
+// ===== FOR 1V1 SINGLE HOOP - FIRST TO 21 WITH WIN BY 2 =====
+                if (this.isSingleHoopMode) {
+                    Player scorer = ball2.getLastDamager();
+                    if (scorer == null) {
+                        return;
+                    }
+
+                    UUID scorerId = scorer.getUniqueId();
+                    boolean isThree = ball2.isThreeEligible();
+
+                    // Update player stats
+                    PlayerStats stats = this.statsManager.getPlayerStats(scorerId);
+                    this.checkAssistEligibility(scorer);
+                    stats.incrementFGMade();
+                    if (isThree) {
+                        stats.increment3FGMade();
+                        stats.incrementThrees();
+                    }
+
+                    // Play green sound for 3-pointers
+                    if (isThree) {
+                        CosmeticSound greenSound;
+                        Athlete athlete = AthleteManager.get(scorerId);
+                        CosmeticSound cosmeticSound = greenSound = athlete != null ? athlete.getGreenSound() : CosmeticSound.NO_SOUND;
+                        if (greenSound != CosmeticSound.NO_SOUND && greenSound.getSoundIdentifier() != null && !greenSound.getSoundIdentifier().isEmpty()) {
+                            Bukkit.getLogger().info("[DEBUG] Playing Green Sound for player: " + scorer.getName() + ", Sound: " + greenSound.getSoundIdentifier());
+                            scorer.getWorld().playSound(scorer.getLocation(), greenSound.getSoundIdentifier(), SoundCategory.PLAYERS, 3.5f, 1.0f);
+                        }
+                    }
+
+                    stats.addPoints(isThree ? 3 : 2);
+
+                    // Determine which team scored
+                    GoalGame.Team scorerTeam = this.getHomePlayers().contains(scorer) ? Team.HOME : Team.AWAY;
+
+                    // Update score
+                    int pointsScored = isThree ? 3 : 2;
+                    if (scorerTeam.equals(Team.HOME)) {
+                        this.homeScore += pointsScored;
+                    } else {
+                        this.awayScore += pointsScored;
+                    }
+
+                    // Send scoring message
+                    Component scoringMessage = Component.text(scorer.getName() + (isThree ? " - 3 POINTS!" : " - 2 POINTS!"))
+                            .color(scorerTeam.equals(Team.HOME) ? TextColor.color(0x00AAFF) : TextColor.color(0xFFAA00))
+                            .decorate(TextDecoration.BOLD);
+
+                    this.sendTitle(scoringMessage);
+
+                    // Track points for final stats
+                    this.points.put(scorerId, this.points.getOrDefault(scorerId, 0) + pointsScored);
+                    if (isThree) {
+                        this.threes.put(scorerId, this.threes.getOrDefault(scorerId, 0) + 1);
+                        if (scorer.hasPermission("rank.vip") || scorer.hasPermission("rank.pro")) {
+                            PlayerDb.add(scorerId, PlayerDb.Stat.COINS, 1);
+                        }
+                    }
+
+                    // Explosion effect
+                    AthleteManager.get(scorerId).getExplosion().mediumExplosion(ball2.getLocation());
+
+                    // ===== CHECK WIN CONDITION: FIRST TO 21 WITH WIN BY 2 =====
+                    boolean gameOver = false;
+                    Team winner = null;
+
+                    int homeScore = this.homeScore;
+                    int awayScore = this.awayScore;
+
+                    // Both must reach at least 21, and leader must be ahead by 2
+                    if (homeScore >= 21 && (homeScore - awayScore) >= 2) {
+                        gameOver = true;
+                        winner = Team.HOME;
+                    } else if (awayScore >= 21 && (awayScore - homeScore) >= 2) {
+                        gameOver = true;
+                        winner = Team.AWAY;
+                    }
+
+                    if (gameOver) {
+                        // Game is over! Call gameOver()
+                        this.gameOver(winner);
+                        this.sendTitle(Component.text("The ").color(Colour.partix()).append(
+                                winner.equals(Team.HOME) ? this.home.name : this.away.name
+                        ).append(Component.text(" Win!").color(Colour.partix())));
+                        this.removeBalls();
+                    } else {
+                        // Game continues - make-it-take-it: reset positions
+                        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                            this.resetHalfCourt1v1Positions();
+                        }, 30L);
+                    }
+
+                    ball2.clearPerfectShot();
+                    this.lastPossessionTeam = null;
+                    this.resetShotClock();
+                    return;  // EXIT - Don't run normal logic
+                }
+// ===== END 1V1 LOGIC =====
+
                 // ===== ORIGINAL NORMAL GAME SCORING LOGIC =====
                 int score;
                 BaseTeam t = team.equals(Team.HOME) ? this.home : this.away;
@@ -1395,12 +1657,21 @@ public class BasketballGame
                     Component scoringMessage;
                     if (scorer != null) {
                         String scorerName = scorer.getName();
-                        Location scorerLoc = scorer.getLocation();
+
                         Location hoopLoc = team.equals(Team.HOME) ?
                                 this.getAwayNet().getCenter().toLocation(scorer.getWorld()) :
                                 this.getHomeNet().getCenter().toLocation(scorer.getWorld());
 
-                        double distance = scorerLoc.distance(hoopLoc);
+                        // FIXED: Use stored distance from time of shot
+                        double distance = ball2.getShotDistance();
+                        if (distance == 0.0) {
+                            // Fallback if no stored distance
+                            Location scorerLoc = scorer.getLocation();
+                            distance = scorerLoc.distance(hoopLoc);
+                        }
+
+                        // Height difference - calculate from current position (less critical)
+                        Location scorerLoc = scorer.getLocation();
                         double heightDiff = scorerLoc.getY() - hoopLoc.getY();
 
                         String shotType;
@@ -1427,6 +1698,7 @@ public class BasketballGame
                             }
                         }
 
+
                         scoringMessage = Component.text(scorerName + " " + shotType)
                                 .color(team.equals(Team.HOME) ? TextColor.color(0x00AAFF) : TextColor.color(0xFFAA00))
                                 .decorate(TextDecoration.BOLD);
@@ -1439,7 +1711,7 @@ public class BasketballGame
 
                     this.sendTitle(scoringMessage);
 
-// NEW: Set flag to suppress OOB message after scoring
+                    // NEW: Set flag to suppress OOB message after scoring
                     this.justScored = true;
 
                     Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
@@ -1508,8 +1780,20 @@ public class BasketballGame
                 } else {
                     if (team.equals(Team.HOME)) {
                         this.homeScore += isThree ? 3 : 2;
+
+                        if (this.isHalfCourt1v1) {
+                            Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                                this.resetHalfCourt1v1Positions();
+                            }, 30L);
+                        }
                     } else {
                         this.awayScore += isThree ? 3 : 2;
+
+                        if (this.isHalfCourt1v1) {
+                            Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                                this.resetHalfCourt1v1Positions();
+                            }, 30L);
+                        }
                     }
                     this.gameOver(team);
                     this.sendTitle(Component.text("The ").color(Colour.partix()).append(t.name).append(Component.text(" Win!").color(Colour.partix())));
@@ -1693,6 +1977,11 @@ public class BasketballGame
             }
         }
         if (dead) {
+            if (this.isHalfCourt1v1) {
+                this.resetHalfCourt1v1Positions();
+                return;
+            }
+
             this.removeBalls();
             this.resetShotClock();
             this.sendTitle(Component.text("Dead Ball").style(Style.style(Colour.deny(), TextDecoration.BOLD)));

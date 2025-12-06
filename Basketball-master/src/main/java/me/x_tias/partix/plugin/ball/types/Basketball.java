@@ -79,6 +79,9 @@ public class Basketball
     private boolean hasMovedWithBall = false; // Has player moved since catching ball
     private static final long STANDING_STILL_DURATION = 600L; // 0.6 seconds in milliseconds
     @Getter
+    private double shotDistance = 0.0;
+    private Location shotLocation = null;
+
     private Map<UUID, Long> defenderBlockAttempts = new HashMap<>();
     // ===== ANKLE BREAK SYSTEM =====
     private Map<UUID, Long> ankleBreakImmunity = new HashMap<>(); // Tracks 3s immunity
@@ -210,7 +213,6 @@ public class Basketball
         this.layupScoreDetected = false;
         this.isLayupAttempt = false;
         this.shouldPreventScore = false;
-        this.layupScored = false; // NEW: Reset scored flag
 
 
         float pitch = Math.min(145.0f, Math.max(90.0f, 90.0f + Math.abs(player.getLocation().getPitch()))) - 90.0f;
@@ -273,6 +275,9 @@ public class Basketball
         }
 
         float yaw = player.getLocation().getYaw();
+
+// CAPTURE SHOT DISTANCE AT TIME OF SHOT
+        this.shotDistance = player.getLocation().distance(targetHoop);
 
         if (this.accuracy < distanceZone.getRequiredGreenAccuracy()) {
             float randomYawOffset = (float)(12 - this.accuracy) * 1.5f;
@@ -405,53 +410,31 @@ public class Basketball
                 stats.incrementFGAttempted();
             }
 
-            Location currentLoc = playerLoc.clone();
-            Location backboard = getBackboardLocation(player);
-            final Location rimTarget = targetHoop.clone();
+            Location loc1 = playerLoc.clone();
+            Location loc2 = targetHoop.clone(); // IMPORTANT: Animate to HOOP, not backboard
 
-            // Create bezier curve from player to BACKBOARD
-            double midX = (currentLoc.getX() + backboard.getX()) / 2;
-            double midY = Math.max(currentLoc.getY(), backboard.getY()) + 2.0; // Arc over to backboard
-            double midZ = (currentLoc.getZ() + backboard.getZ()) / 2;
+            double midX = (loc1.getX() + loc2.getX()) / 2;
+            double midY = ((loc1.getY() + loc2.getY()) / 2) + 3.5; // Lower arc than jump shots
+            double midZ = (loc1.getZ() + loc2.getZ()) / 2;
 
-            final Location p1 = new Location(currentLoc.getWorld(), midX, midY, midZ);
-            final List<Location> bezierPoints = bezierCurve(40, currentLoc, p1, backboard);
+            final Location p1 = new Location(loc1.getWorld(), midX, midY, midZ);
+
+            // Animate directly to hoop - let checkBackboardCollision() handle backboard
+            final List<Location> bezierPoints = bezierCurve(50, loc1, p1, loc2);
 
             setLocked(true);
-            this.layupScoreDetected = false; // RESET FLAG - new layup attempt
-
             new BukkitRunnable() {
                 int index = 0;
 
                 @Override
                 public void run() {
-                    // When bezier curve completes, ball has reached backboard
                     if (index >= bezierPoints.size() || !isValid()) {
                         setLocked(false);
-
-                        // Play backboard sound
-                        getLocation().getWorld().playSound(getLocation(), Sound.BLOCK_WOOD_HIT, SoundCategory.MASTER, 0.8f, 0.9f);
-
-                        if (perfectShot) {
-                            // GREEN LAYUP - Bounce from backboard toward rim (goes in)
-                            Location hoopTarget = rimTarget.clone();
-                            hoopTarget.setY(rimTarget.getY() - 0.5); // Below rim so it goes through
-                            Vector toHoop = hoopTarget.toVector().subtract(getLocation().toVector()).normalize();
-                            setVelocity(toHoop.multiply(0.35), -0.05); // Soft arc into rim
-                        } else {
-                            // MISSED LAYUP - Bounce away from rim
-                            Vector awayFromHoop = getLocation().toVector().subtract(rimTarget.toVector()).normalize();
-                            awayFromHoop.setX(awayFromHoop.getX() + (Math.random() - 0.5) * 0.3);
-                            awayFromHoop.setZ(awayFromHoop.getZ() + (Math.random() - 0.5) * 0.3);
-                            setVelocity(awayFromHoop.multiply(0.4), 0.2);
-                        }
-
-                        isLayupAttempt = false;
                         cancel();
                         return;
                     }
 
-                    int amountToIncrement = Math.max(4, (index / 20) + 1);
+                    int amountToIncrement = Math.max(3, (index / 20) + 1);
 
                     setVelocity(new Vector());
                     endPhysics(bezierPoints.get(index));
@@ -460,6 +443,7 @@ public class Basketball
             }.runTaskTimer(Partix.getInstance(), 1L, 1L);
 
             this.lastOwnerUUID = player.getUniqueId();
+
 
 
 
@@ -473,6 +457,26 @@ public class Basketball
             double midZ = (loc1.getZ() + loc2.getZ()) / 2;
 
             final Location p1 = new Location(loc1.getWorld(), midX, midY, midZ);
+
+// CHECK BACKBOARD COLLISION BEFORE STARTING BEZIER
+            if (doesPathIntersectBackboard(loc1, targetHoop, player)) {
+                // Ball would hit backboard - bounce it away instead
+                System.out.println("DEBUG: Shot will hit backboard, bouncing ball");
+
+                Vector awayFromBackboard = targetHoop.toVector().subtract(loc1.toVector()).normalize();
+                awayFromBackboard.setX(awayFromBackboard.getX() + (Math.random() - 0.5) * 0.3);
+                awayFromBackboard.setZ(awayFromBackboard.getZ() + (Math.random() - 0.5) * 0.3);
+                awayFromBackboard.setY(0.2);
+
+                this.setVelocity(awayFromBackboard.multiply(0.5));
+                this.lastOwnerUUID = player.getUniqueId();
+                player.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 30, 3, true, false));
+                this.delay = 10;
+                this.setStealDelay(0);
+                this.giveaway();
+                return;
+            }
+
             final List<Location> bezierPoints = bezierCurve(100, loc1, p1, loc2);
 
             setLocked(true);
@@ -635,7 +639,6 @@ public class Basketball
         }
 
         this.lastOwnerUUID = player.getUniqueId();
-        System.out.println("SET VELOCITY 10");
         player.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 30, 3, true, false));
         player.addPotionEffect(new PotionEffect(PotionEffectType.JUMP_BOOST, 30, 128, true, false));
         this.delay = 10;
@@ -883,7 +886,6 @@ public class Basketball
             Player player = this.getCurrentDamager();
             this.setLocation(player.getEyeLocation().add(player.getLocation().getDirection().multiply(0.45)));
             this.setVelocity(player, player.getLocation().getDirection().multiply(0.6));
-            System.out.println("SET VELOCITY 11");
             this.giveaway();
             this.threeEligible = false;
             this.delay = 10;
@@ -934,7 +936,6 @@ public class Basketball
 
             this.setLocation(location.add(direction.clone().multiply(0.45)));
             this.setVelocity(player, direction.clone().multiply(passSpeed), verticalComponent);
-            System.out.println("SET VELOCITY 12 (" + this.passMode.getDisplayName() + ")");
 
             this.game.startAssistTimer(player.getUniqueId());
 
@@ -1005,21 +1006,19 @@ public class Basketball
     }
 
     private Location getBackboardLocation(Player player) {
-        Location targetHoop = this.getTargetHoop(player);
+        if (player == null) return null;
 
-        // Determine which direction the backboard is
-        // If shooting at away net (lower Z), backboard is behind it (even lower Z)
-        // If shooting at home net (higher Z), backboard is behind it (even higher Z)
+        Location targetHoop = this.getTargetHoop(player);
+        if (targetHoop == null) return null;
 
         Location backboard = targetHoop.clone();
 
-        // Check which hoop we're shooting at based on Z coordinate
         if (targetHoop.getZ() < this.game.getCenter().getZ()) {
             // Away net - backboard is further negative Z
-            backboard.add(0, 0.5, -1.2); // Slightly above rim, behind it
+            backboard.add(0, 0.5, -1.2);
         } else {
             // Home net - backboard is further positive Z
-            backboard.add(0, 0.5, 1.2); // Slightly above rim, behind it
+            backboard.add(0, 0.5, 1.2);
         }
 
         return backboard;
@@ -1228,7 +1227,6 @@ public class Basketball
             // Don't set justDunkedPlayer on a miss - only set it when player lands after successful dunk
         }
 
-        System.out.println("SET VELOCITY 13 (DUNK)");
 
         this.dunkMeterActive = false;
         this.dunkMeterAccuracy = 0;
@@ -1292,6 +1290,111 @@ public class Basketball
             }
         }
     }
+    private boolean doesPathIntersectBackboard(Location shootLocation, Location targetHoop, Player shooter) {
+        // Null checks first
+        if (shootLocation == null || targetHoop == null || shootLocation.getWorld() == null) {
+            return false;
+        }
+
+        Location backboard = getBackboardLocation(shooter);
+        if (backboard == null || !backboard.getWorld().equals(shootLocation.getWorld())) {
+            return false;
+        }
+
+        // Backboard parameters
+        double backboardThickness = 0.5;
+        double backboardRadius = 1.5;
+
+        try {
+            // Calculate direction
+            Vector shootToHoop = targetHoop.toVector().subtract(shootLocation.toVector());
+
+            // Sanity check - make sure vector is valid
+            if (!isValidVector(shootToHoop)) {
+                System.out.println("Invalid shootToHoop vector, skipping backboard check");
+                return false;
+            }
+
+            double totalDistance = shootToHoop.length();
+
+            // If distance is 0 or too small, no intersection possible
+            if (totalDistance < 0.1) {
+                return false;
+            }
+
+            Vector direction = shootToHoop.normalize();
+
+            // Sanity check - make sure direction is valid
+            if (!isValidVector(direction)) {
+                System.out.println("Invalid direction vector, skipping backboard check");
+                return false;
+            }
+
+            // Sample points along the path from shooter to hoop
+            for (double t = 0; t <= totalDistance; t += 0.2) {
+                Vector offset = direction.clone().multiply(t);
+
+                // Sanity check on offset
+                if (!isValidVector(offset)) {
+                    System.out.println("Invalid offset at t=" + t + ", stopping backboard check");
+                    break;
+                }
+
+                Location samplePoint = shootLocation.clone().add(offset);
+
+                // Sanity check on sample point
+                if (!isValidLocation(samplePoint)) {
+                    System.out.println("Invalid sample point at t=" + t);
+                    break;
+                }
+
+                // Check if this point is within the backboard collision box
+                if (isPointNearBackboard(samplePoint, backboard, backboardThickness, backboardRadius)) {
+                    System.out.println("Path intersects backboard at distance t=" + t);
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (Exception e) {
+            System.out.println("Exception during backboard check: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+    private boolean isValidVector(Vector v) {
+        if (v == null) return false;
+        return !Double.isNaN(v.getX()) && !Double.isNaN(v.getY()) && !Double.isNaN(v.getZ()) &&
+                !Double.isInfinite(v.getX()) && !Double.isInfinite(v.getY()) && !Double.isInfinite(v.getZ());
+    }
+    private boolean isValidLocation(Location loc) {
+        if (loc == null || loc.getWorld() == null) return false;
+        double x = loc.getX();
+        double y = loc.getY();
+        double z = loc.getZ();
+        return !Double.isNaN(x) && !Double.isNaN(y) && !Double.isNaN(z) &&
+                !Double.isInfinite(x) && !Double.isInfinite(y) && !Double.isInfinite(z);
+    }
+    private boolean isPointNearBackboard(Location point, Location backboardCenter, double thickness, double radius) {
+        if (point == null || backboardCenter == null) return false;
+
+        // Sanity check coordinates
+        if (!isValidLocation(point) || !isValidLocation(backboardCenter)) {
+            return false;
+        }
+
+        double distX = Math.abs(point.getX() - backboardCenter.getX());
+        double distY = Math.abs(point.getY() - backboardCenter.getY());
+        double distZ = Math.abs(point.getZ() - backboardCenter.getZ());
+
+        // Check for NaN results
+        if (Double.isNaN(distX) || Double.isNaN(distY) || Double.isNaN(distZ)) {
+            return false;
+        }
+
+        return distX <= radius && distY <= radius && distZ <= thickness;
+    }
+
     private boolean calculateDunkSuccessWithMeter(int accuracy, DunkContestResult contestResult) {
         double contestPercentage = contestResult.getContestValue();
 
@@ -1489,6 +1592,8 @@ public class Basketball
 
     public void giveaway() {
         this.removeCurrentDamager();
+        // RESET shot tracking when ball is released
+        this.shotDistance = 0.0;
     }
 
     private void runStealImmunity() {
@@ -1726,6 +1831,9 @@ public class Basketball
         this.shouldPreventScore = false;
         this.justDunkedPlayer = null;
         this.catchDelay = 20;
+        this.layupScored = false;
+        this.isLayupAttempt = false;
+        this.shotDistance = 0.0;
 
         // NEW: Reset pass mode to BULLET when picking up ball
         this.passMode = PassMode.BULLET;
@@ -1984,8 +2092,6 @@ public class Basketball
         // Play sound effect
         this.getLocation().getWorld().playSound(this.getLocation(),
                 Sound.BLOCK_WOOD_HIT, SoundCategory.MASTER, 0.7f, 0.9f);
-
-        System.out.println("Backboard collision detected - ball bounced!");
     }
     private void detectReboundPickup() {
         if (!this.game.getState().equals(GoalGame.State.REGULATION)) {

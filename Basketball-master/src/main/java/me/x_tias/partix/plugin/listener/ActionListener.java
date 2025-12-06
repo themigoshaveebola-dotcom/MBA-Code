@@ -182,7 +182,6 @@ public class ActionListener
                 Location spawnLoc = player.getEyeLocation().clone().add(0.0, -0.5, 0.0);
                 final Ball fakeInboundBall = BallFactory.create(spawnLoc, BallType.BASKETBALL, game);
                 fakeInboundBall.setVelocity(0.0, 0.1, 0.0);
-                System.out.println("SET VELOCITY 15");
                 new BukkitRunnable() {
                     public void run() {
                         BallFactory.remove(fakeInboundBall);
