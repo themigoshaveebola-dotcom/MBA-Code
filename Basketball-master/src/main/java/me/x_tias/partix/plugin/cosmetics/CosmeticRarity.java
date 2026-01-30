@@ -20,5 +20,14 @@ public enum CosmeticRarity {
         this.cost = cost;
     }
 
-}
+    // Add this method
+    public String getColor() {
+        return switch(this) {
+            case COMMON -> "§7";
+            case RARE -> "§9";
+            case EPIC -> "§5";
+            case LEGENDARY -> "§6";
+        };
+    }
 
+}

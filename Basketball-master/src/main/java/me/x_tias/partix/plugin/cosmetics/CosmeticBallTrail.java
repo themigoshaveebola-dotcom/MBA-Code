@@ -210,6 +210,50 @@ public class CosmeticBallTrail
             }
             case "balltrail.happy": {
                 world.spawnParticle(Particle.HAPPY_VILLAGER, location, 8, 0.2, 0.2, 0.2, 0.03);
+                break;
+            }
+            case "balltrail.supreme": {
+                // Diamond trail with sparkles
+                Particle.DustOptions diamondOptions = new Particle.DustOptions(Color.fromRGB(185, 242, 255), 1.2f);
+                world.spawnParticle(Particle.DUST, location, 8, 0.2, 0.2, 0.2, (Object) diamondOptions);
+                world.spawnParticle(Particle.END_ROD, location, 3, 0.15, 0.15, 0.15, 0.02);
+                world.spawnParticle(Particle.FIREWORK, location, 2, 0.1, 0.1, 0.1, 0.01);
+                break;
+            }
+            case "balltrail.phoenix": {
+                // Fire and orange particles rising upward
+                Particle.DustOptions orangeFlame = new Particle.DustOptions(Color.fromRGB(255, 140, 0), 1.0f);
+                Particle.DustOptions yellowFlame = new Particle.DustOptions(Color.fromRGB(255, 215, 0), 1.0f);
+                world.spawnParticle(Particle.FLAME, location, 6, 0.2, 0.25, 0.2, 0.03);
+                world.spawnParticle(Particle.DUST, location, 4, 0.15, 0.2, 0.15, (Object) orangeFlame);
+                world.spawnParticle(Particle.DUST, location, 3, 0.15, 0.2, 0.15, (Object) yellowFlame);
+                break;
+            }
+            case "balltrail.neonpulse": {
+                // Electric pink and cyan particles
+                Particle.DustOptions pinkNeon = new Particle.DustOptions(Color.fromRGB(255, 20, 147), 1.0f);
+                Particle.DustOptions cyanNeon = new Particle.DustOptions(Color.fromRGB(0, 255, 255), 1.0f);
+                world.spawnParticle(Particle.DUST, location, 5, 0.2, 0.2, 0.2, (Object) pinkNeon);
+                world.spawnParticle(Particle.DUST, location, 5, 0.2, 0.2, 0.2, (Object) cyanNeon);
+                world.spawnParticle(Particle.CRIT, location, 4, 0.15, 0.15, 0.15, 0.02);
+                break;
+            }
+            case "balltrail.inferno": {
+                // Intense fire trail with smoke
+                world.spawnParticle(Particle.FLAME, location, 8, 0.25, 0.25, 0.25, 0.04);
+                world.spawnParticle(Particle.SMOKE, location, 4, 0.2, 0.2, 0.2, 0.03);
+                Particle.DustOptions redFlame = new Particle.DustOptions(Color.fromRGB(220, 20, 60), 1.0f);
+                world.spawnParticle(Particle.DUST, location, 5, 0.2, 0.2, 0.2, (Object) redFlame);
+                break;
+            }
+            case "balltrail.emeraldcomet": {
+                // Green glowing particles
+                Particle.DustOptions emeraldGreen = new Particle.DustOptions(Color.fromRGB(0, 201, 87), 1.0f);
+                Particle.DustOptions lightGreen = new Particle.DustOptions(Color.fromRGB(144, 238, 144), 1.0f);
+                world.spawnParticle(Particle.DUST, location, 6, 0.2, 0.2, 0.2, (Object) emeraldGreen);
+                world.spawnParticle(Particle.DUST, location, 4, 0.15, 0.15, 0.15, (Object) lightGreen);
+                world.spawnParticle(Particle.HAPPY_VILLAGER, location, 3, 0.15, 0.15, 0.15, 0.02);
+                break;
             }
         }
     }

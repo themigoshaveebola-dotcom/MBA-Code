@@ -18,6 +18,8 @@ import com.comphenix.protocol.ProtocolManager;
 import lombok.Getter;
 import me.x_tias.partix.bucks.DailyRewardDb;
 import me.x_tias.partix.bucks.DailyRewardListener;
+import me.x_tias.partix.command.RefereeCommand;
+import me.x_tias.partix.command.CoachCommand;
 import me.x_tias.partix.bucks.MbaBucksLeaderboard;
 import me.x_tias.partix.bucks.MbaBucksPlaceholder;
 import me.x_tias.partix.command.*;
@@ -27,6 +29,7 @@ import me.x_tias.partix.mini.betting.BettingManager;
 import me.x_tias.partix.plugin.ball.BallFactory;
 import me.x_tias.partix.plugin.cooldown.Cooldown;
 import me.x_tias.partix.plugin.cosmetics.Cosmetics;
+import me.x_tias.partix.command.CrateShopCommand;
 import me.x_tias.partix.plugin.cosmetics.ItemShop;
 import me.x_tias.partix.plugin.listener.*;
 import me.x_tias.partix.plugin.rightclick.RightClickListener;
@@ -36,6 +39,8 @@ import me.x_tias.partix.season.AllTimeLeaderboard;
 import me.x_tias.partix.season.Season;
 import me.x_tias.partix.season.SeasonLeaderboard;
 import me.x_tias.partix.season.SeasonPlaceholder;
+import me.x_tias.partix.season.LeaderboardManager;
+import me.x_tias.partix.season.LeaderboardPlaceholder;
 import me.x_tias.partix.server.PlaceLoader;
 import me.x_tias.partix.server.rank.Ranks;
 import me.x_tias.partix.util.Config;
@@ -60,6 +65,8 @@ public final class Partix extends JavaPlugin implements Listener {
     @Getter
     private RightClickManager rightClickManager;
     @Getter private Config unicodeConfig;
+    @Getter
+    private LocationMusicManager locationMusicManager;
 
     public static Partix getInstance() {
         return plugin;
@@ -76,6 +83,7 @@ public final class Partix extends JavaPlugin implements Listener {
         this.ballKey = new NamespacedKey(this, "partix-ball");
         this.unicodeConfig = new Config("unicode.yml", this);
         this.rightClickManager = new RightClickManager();
+        this.locationMusicManager = new LocationMusicManager();
         this.proAmManager = new ProAmManager(this);
         this.proAmGameManager = new ProAmGameManager(this, this.proAmManager);
         this.database();
@@ -89,6 +97,7 @@ public final class Partix extends JavaPlugin implements Listener {
         new AnteUpManager(this);
         BettingManager.loadGamesFromConfig(this.getConfig());
         BettingManager.startLockMonitor(this);
+
 
         // FIXME do the new accuracy title bar system
         // FIXME do the new accuracy auto-aim system
@@ -123,6 +132,11 @@ public final class Partix extends JavaPlugin implements Listener {
         this.getServer().getPluginManager().registerEvents(new BroadcastExitListener(), this);
         this.getServer().getPluginManager().registerEvents(new BroadcastMovementBlocker(), this);
         this.getServer().getPluginManager().registerEvents(new RightClickListener(), this);
+        this.getServer().getPluginManager().registerEvents(this.locationMusicManager, this);
+        this.getServer().getPluginManager().registerEvents(me.x_tias.partix.mini.factories.Hub.hub, this);
+        
+        // Register ProtocolLib packet listener for key press detection
+        PlayerInputTracker.register(this);
     }
 
     private void placeholders() {
@@ -132,6 +146,10 @@ public final class Partix extends JavaPlugin implements Listener {
         MbaBucksLeaderboard.setup();
         new MbaBucksPlaceholder().register();
         new ProAmLeaderboardExpansion().register();
+        
+        // Initialize stat leaderboards for holograms
+        LeaderboardManager.setup();
+        new LeaderboardPlaceholder().register();
     }
 
     private void cosmetics() {
@@ -147,6 +165,27 @@ public final class Partix extends JavaPlugin implements Listener {
         cm.registerCommand(new BettingCommand(this));
         cm.registerCommand(new ProAmCommand(this));
         cm.registerCommand(new StatsCommand());
+        cm.registerCommand(new CrateShopCommand());
+
+
+        // ADD THESE TWO LINES:
+        cm.registerCommand(new RefereeCommand());
+        cm.registerCommand(new CoachCommand());
+        cm.registerCommand(new PayCommand());
+        
+        // Discord linking commands
+        cm.registerCommand(new LinkDiscordCommand());
+        cm.registerCommand(new UnlinkDiscordCommand());
+        cm.registerCommand(new WhoisCommand());
+        cm.registerCommand(new ViewStatsCommand());
+        
+        // Admin commands
+        cm.registerCommand(new RingCommand());
+        cm.registerCommand(new AccoladeCommand());
+        
+        // Test commands
+        cm.registerCommand(new HatTestCommand());
+
     }
 
     private void ranks() {

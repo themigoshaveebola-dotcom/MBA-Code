@@ -1,6 +1,3 @@
-/*
- * Decompiled with CFR 0.152.
- */
 package me.x_tias.partix.database;
 
 import lombok.Getter;
@@ -36,12 +33,18 @@ public class PlayerDb {
                  Statement statement = connection.createStatement()) {
                 String createTableQuery = "CREATE TABLE IF NOT EXISTS `players` (`uuid` VARCHAR(36) PRIMARY KEY, `ign` VARCHAR(255) DEFAULT '$UnknownName')";
                 statement.execute(createTableQuery);
+
                 for (Stat stat : Stat.values()) {
                     String columnName = stat.name();
                     if (PlayerDb.columnExists(connection, columnName)) continue;
-                    String addColumnQuery = "ALTER TABLE `players` ADD COLUMN `" + columnName + "` INT DEFAULT " + stat.getDefaultValue();
+
+                    // Use TEXT for CRATE_DATA, INT for everything else
+                    String columnType = stat.isTextColumn() ? "TEXT" : "INT";
+                    String defaultValue = stat.isTextColumn() ? "'{}'" : String.valueOf(stat.getDefaultValue());
+
+                    String addColumnQuery = "ALTER TABLE `players` ADD COLUMN `" + columnName + "` " + columnType + " DEFAULT " + defaultValue;
                     statement.execute(addColumnQuery);
-                    logger.info("✅ Added missing column: " + columnName);
+                    logger.info("✅ Added missing column: " + columnName + " (" + columnType + ")");
                 }
             } catch (SQLException e) {
                 logger.severe("❌ Database setup failed: " + e.getMessage());
@@ -49,32 +52,24 @@ public class PlayerDb {
         });
     }
 
-    /*
-     * Enabled aggressive exception aggregation
-     */
     private static boolean columnExists(Connection connection, String columnName) {
         try (PreparedStatement stmt = connection.prepareStatement("SHOW COLUMNS FROM `players` LIKE ?")) {
-            boolean bl;
-            block14:
-            {
-                stmt.setString(1, columnName);
-                ResultSet rs = stmt.executeQuery();
-                try {
-                    bl = rs.next();
-                    if (rs == null) break block14;
-                } catch (Throwable throwable) {
-                    if (rs != null) {
-                        try {
-                            rs.close();
-                        } catch (Throwable throwable2) {
-                            throwable.addSuppressed(throwable2);
-                        }
+            stmt.setString(1, columnName);
+            ResultSet rs = stmt.executeQuery();
+            try {
+                boolean exists = rs.next();
+                if (rs != null) rs.close();
+                return exists;
+            } catch (Throwable throwable) {
+                if (rs != null) {
+                    try {
+                        rs.close();
+                    } catch (Throwable throwable2) {
+                        throwable.addSuppressed(throwable2);
                     }
-                    throw throwable;
                 }
-                rs.close();
+                throw throwable;
             }
-            return bl;
         } catch (SQLException e) {
             logger.severe("❌ Error checking column: " + columnName + " - " + e.getMessage());
             return false;
@@ -94,11 +89,6 @@ public class PlayerDb {
         });
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     public static CompletableFuture<Integer> get(UUID playerUUID, Stat stat) {
         final CompletableFuture<Integer> future = new CompletableFuture<>();
         Bukkit.getScheduler().runTaskAsynchronously(Partix.getInstance(), () -> {
@@ -121,6 +111,51 @@ public class PlayerDb {
         return future;
     }
 
+    // NEW: Get string value (for CRATE_DATA)
+    public static CompletableFuture<String> getString(UUID playerUUID, Stat stat) {
+        final CompletableFuture<String> future = new CompletableFuture<>();
+        Bukkit.getScheduler().runTaskAsynchronously(Partix.getInstance(), () -> {
+            try (Connection connection = PlayerDb.getConnection();
+                 PreparedStatement statement = connection.prepareStatement("SELECT " + stat.name() + " FROM players WHERE uuid = ?")) {
+                statement.setString(1, playerUUID.toString());
+                try (ResultSet rs = statement.executeQuery()) {
+                    if (!rs.next()) {
+                        future.complete("{}");
+                        return;
+                    }
+                    String value = rs.getString(stat.name());
+                    future.complete(value != null ? value : "{}");
+                    return;
+                }
+            } catch (SQLException e) {
+                logger.severe("❌ Failed to get string stat " + stat.name() + ": " + e.getMessage());
+            }
+            future.complete("{}");
+        });
+        return future;
+    }
+
+    // NEW: Set string value (for CRATE_DATA)
+    public static CompletableFuture<Void> setString(UUID playerUUID, Stat stat, String value) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        Bukkit.getScheduler().runTaskAsynchronously(Partix.getInstance(), () -> {
+            try (Connection connection = PlayerDb.getConnection();
+                 PreparedStatement statement = connection.prepareStatement(
+                         "INSERT INTO players (uuid, " + stat.name() + ") VALUES (?, ?) " +
+                                 "ON DUPLICATE KEY UPDATE " + stat.name() + " = ?")) {
+                statement.setString(1, playerUUID.toString());
+                statement.setString(2, value);
+                statement.setString(3, value);
+                statement.execute();
+                future.complete(null);
+            } catch (SQLException e) {
+                logger.severe("❌ Failed to set string " + stat.name() + ": " + e.getMessage());
+                future.completeExceptionally(e);
+            }
+        });
+        return future;
+    }
+
     public static void add(UUID playerUUID, Stat stat, int amount) {
         Bukkit.getScheduler().runTaskAsynchronously(Partix.getInstance(), () -> {
             try (Connection connection = PlayerDb.getConnection();
@@ -137,6 +172,7 @@ public class PlayerDb {
             }
         });
     }
+
     public static void remove(UUID playerUUID, Stat stat, int amount) {
         if (amount <= 0) {
             return;
@@ -152,7 +188,6 @@ public class PlayerDb {
             }
         });
     }
-
     public static void set(UUID playerUUID, Stat stat, int value) {
         Bukkit.getScheduler().runTaskAsynchronously(Partix.getInstance(), () -> {
             try (Connection connection = PlayerDb.getConnection();
@@ -169,11 +204,6 @@ public class PlayerDb {
         });
     }
 
-    /*
-     * Enabled aggressive block sorting
-     * Enabled unnecessary exception pruning
-     * Enabled aggressive exception aggregation
-     */
     public static CompletableFuture<String> getName(UUID playerUUID) {
         final CompletableFuture<String> future = new CompletableFuture<>();
         Bukkit.getScheduler().runTaskAsynchronously(Partix.getInstance(), () -> {
@@ -225,6 +255,8 @@ public class PlayerDb {
     @Getter
     public enum Stat {
         CHAMPIONSHIPS(0),
+        CHAMPIONSHIP_RINGS(0, true), // JSON array of ring names
+        ACCOLADES(0, true), // JSON array of accolade names
         SEASONS_GOLD(0),
         EXP(0),
         COINS(0),
@@ -235,7 +267,14 @@ public class PlayerDb {
         WINSONG(0),
         BALL_TRAIL(0),
         DEFAULT_COSMETICS(0),
+        ACCESSORY(0),
         MBA_BUCKS(0),
+        CRATE_DATA(0, true), // Mark as text column
+        
+        // Season Pass
+        SEASON_PASS_EXP(0),
+        SEASON_PASS_TIER(1),
+        SEASON_PASS_CLAIMED_REWARDS(0, true), // JSON array of claimed reward IDs
 
         // Career Record
         CAREER_WINS(0),
@@ -271,13 +310,27 @@ public class PlayerDb {
         SEASON_1_FG_ATTEMPTED(0),
         SEASON_1_3FG_MADE(0),
         SEASON_1_3FG_ATTEMPTED(0),
-        SEASON_1_THREES(0);
+        SEASON_1_THREES(0),
+
+        // Rec Stats
+        REC_WINS(0),
+        REC_LOSSES(0),
+        REC_GAMES(0);
 
         private final int defaultValue;
+        private final boolean isTextColumn;
 
         Stat(int defaultValue) {
+            this(defaultValue, false);
+        }
+
+        Stat(int defaultValue, boolean isTextColumn) {
             this.defaultValue = defaultValue;
+            this.isTextColumn = isTextColumn;
+        }
+
+        public boolean isTextColumn() {
+            return isTextColumn;
         }
     }
 }
-

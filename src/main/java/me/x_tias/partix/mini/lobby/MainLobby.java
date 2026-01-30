@@ -68,9 +68,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import org.bukkit.event.Listener;
 
 public class MainLobby
-        extends Lobby {
+        extends Lobby implements Listener {
     public static final ItemStack FILLER = Items.get(Component.text(" "), Material.BLACK_STAINED_GLASS_PANE, 1, " ");
     private final HashMap<Location, BasketballGame> games = new HashMap<>();
     private final Settings customSettings = new Settings(WinType.TIME_5, GameType.MANUAL, WaitType.MEDIUM, CompType.CASUAL, 2, false, false, false, 4, GameEffectType.NONE);
@@ -105,8 +106,12 @@ public class MainLobby
             int pts = SeasonDb.get(player.getUniqueId(), SeasonDb.Stat.POINTS).join();
             String div = pts >= 50000 ? "§6Gold" : "§7Silver";
             String points = String.valueOf(pts - (pts >= 50000 ? 50000 : 0));
+            
+            // Season Pass Info
+            String seasonPassProgress = me.x_tias.partix.plugin.seasonpass.SeasonPassManager.getTierProgress(player.getUniqueId());
+            
             Bukkit.getScheduler().runTask(Partix.getInstance(), () ->
-                    Sidebar.set(player, Component.text("  MBA  ").color(Colour.partix()).decorate(TextDecoration.BOLD), " ", "§6§lYour Info  ", "  §fName: §e" + player.getName(), "  §fRank: " + rankPrefix, "  §fVer: " + (player.getName().startsWith(".") ? "§eBedrock" : "§eJava"), "     ", "§6§lYour Stats  ", "  §fCoins: §e" + coins, "  §fMBA Bucks: §e" + mbaBucks, "        ", "§6§lThis Season  ", "  §fDiv: §e" + div, "  §fPts: §e" + points, "                     ", "§7§.")
+                    Sidebar.set(player, Component.text("  MBA  ").color(Colour.partix()).decorate(TextDecoration.BOLD), " ", "§c§lYour Info  ", "  §fName: §b" + player.getName(), "  §fRank: " + rankPrefix, "  §fVer: §b" + (player.getName().startsWith(".") ? "Bedrock" : "Java"), "     ", "§f§lYour Stats  ", "  §fCoins: §e" + coins, "  §fMBA Bucks: §a" + mbaBucks, "        ", "§9§lThis Season  ", "  §fDiv: §e" + div, "  §fPts: §a" + points, "  §fPass: " + seasonPassProgress, "                     ", "§7§.")
             );
         });
     }
@@ -144,15 +149,15 @@ public class MainLobby
     public void giveItems(Player player) {
         PlayerInventory i = player.getInventory();
         i.setItem(0, Items.get(Message.itemName("Server Selector", "key.use", player), Material.NETHER_STAR));
-        i.setItem(8, Items.get(Message.itemName("Prediction Book", "key.use", player), Material.BOOK));
+        i.setItem(1, Items.get(Message.itemName("Season Pass", "key.use", player), Material.ENCHANTED_BOOK));
     }
 
     @EventHandler
     public void onPlayerInteract(PlayerInteractEvent event) {
         Player player = event.getPlayer();
         ItemStack item = player.getInventory().getItemInMainHand();
-        if (item.getType() == Material.BOOK && event.getAction().toString().contains("RIGHT_CLICK")) {
-            BettingManager.openGameSelectionGUI(player);
+        if (item.getType() == Material.ENCHANTED_BOOK && event.getAction().toString().contains("RIGHT_CLICK")) {
+            me.x_tias.partix.plugin.seasonpass.SeasonPassManager.openSeasonPassGUI(player);
         }
     }
 
@@ -176,8 +181,8 @@ public class MainLobby
             sm.lore(List.of(Component.text("§7View your stats & settings")));
         });
         this.registerFramed(buttons, 16, profileHead, p -> p.sendMessage("§eProfile feature coming soon!"));
-        this.registerFramed(buttons, 37, this.createIcon(Material.WRITABLE_BOOK, Component.text("Discord").color(Colour.partix()), "§7Get our Discord link"), p -> p.sendMessage("§aJoin our Discord: §https://discord.gg/XDkscZGBg3"));
-        this.registerFramed(buttons, 40, this.createIcon(Material.EMERALD, Component.text("Server Store").color(Colour.partix()), "§7Visit our Store"), p -> p.sendMessage("§aVisit our Store: §https://minecraftbasketball.tebex.io/"));
+        this.registerFramed(buttons, 37, this.createIcon(Material.WRITABLE_BOOK, Component.text("Discord").color(Colour.partix()), "§7Get our Discord link"), p -> p.sendMessage("§aJoin our Discord: §https://discord.gg/yra3gjNRpD"));
+        this.registerFramed(buttons, 40, this.createIcon(Material.EMERALD, Component.text("Server Store").color(Colour.partix()), "§7Visit our Store"), p -> p.sendMessage("§aVisit our Store: §Coming Soon"));
         this.registerFramed(buttons, 43, this.createIcon(Material.FIREWORK_STAR, Component.text("Cosmetics").color(Colour.partix()), "§7Open Cosmetics Menu"), p -> new CosmeticGUI(p));
         new GUI("Server Selector", 6, false, buttons).openInventory(player);
     }

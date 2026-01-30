@@ -181,33 +181,18 @@ public abstract class GoalGame
         this.center = location.clone().toCenterLocation();
         this.settings = settings;
         Location m = this.center.clone();
-//        this.homeNet = new BoundingBox(m.getX() + xDistance - xLength, m.getY() + yDistance, m.getZ() + zWidth, m.getX() + xDistance + xLength, m.getY() + yHeight + yDistance, m.getZ() + zWidth * -1.0);
-//        this.awayNet = new BoundingBox(m.getX() + xDistance * -1.0 - xLength * -1.0, m.getY() + yDistance, m.getZ() + zWidth, m.getX() + xDistance * -1.0 + xLength * -1.0, m.getY() + yHeight + yDistance, m.getZ() + zWidth * -1.0);
-//        this.homeSpawn = this.homeNet.getCenter().toLocation(this.center.getWorld()).subtract(3.5, -1.0, 0.0);
-//        this.awaySpawn = this.awayNet.getCenter().toLocation(this.center.getWorld()).add(3.5, -1.0, 0.0);
 
-        // Swap X and Z for court alignment along Z-axis
-        // Create the goal bounding boxes
-        // For Z-axis alignment, the width is along X, length is along Z
+        // ALWAYS create home net
         this.homeNet = new BoundingBox(
                 m.getX() - xLength,
                 m.getY() + yDistance,
-                m.getZ() + xDistance,
+                m.getZ() + xDistance - 0.25,
                 m.getX() + xLength,
                 m.getY() + yDistance + yHeight,
-                m.getZ() + xDistance + zWidth
+                m.getZ() + xDistance + zWidth - 0.25
         ).expand(0.25); // Slightly expand the box for better detection
 
-        this.awayNet = new BoundingBox(
-                m.getX() - xLength,
-                m.getY() + yDistance,
-                m.getZ() - xDistance - zWidth,
-                m.getX() + xLength,
-                m.getY() + yDistance + yHeight,
-                m.getZ() - xDistance
-        ).expand(0.25);
-
-        // Set spawn points aligned to the court's Z orientation
+        // Set home spawn point aligned to the court's Z orientation
         this.homeSpawn = new Location(
                 this.center.getWorld(),
                 this.center.getX(),
@@ -217,12 +202,32 @@ public abstract class GoalGame
                 0
         );
 
-        this.awaySpawn = new Location(
-                this.center.getWorld(),
-                this.center.getX(),
-                this.center.getY() + 1.0,
-                this.awayNet.getCenterZ() + 3.5
-        );
+        // ✅ CHECK: Only create away net for multi-player games (2v2+)
+        // For 1v1, both teams score on the same hoop
+        boolean isSingleHoop = this instanceof BasketballGame && ((BasketballGame) this).isSingleHoopMode;
+
+        if (isSingleHoop) {
+            // For 1v1: Both teams use the SAME hoop
+            this.awayNet = this.homeNet.clone();
+            this.awaySpawn = this.homeSpawn.clone();
+        } else {
+            // Normal game: Create separate away net
+            this.awayNet = new BoundingBox(
+                    m.getX() - xLength,
+                    m.getY() + yDistance,
+                    m.getZ() - xDistance - zWidth + 0.25,
+                    m.getX() + xLength,
+                    m.getY() + yDistance + yHeight,
+                    m.getZ() - xDistance + 0.25
+            ).expand(0.25);
+
+            this.awaySpawn = new Location(
+                    this.center.getWorld(),
+                    this.center.getX(),
+                    this.center.getY() + 1.0,
+                    this.awayNet.getCenterZ() + 3.5
+            );
+        }
 
         // Arena box with proper dimensions for Z-axis oriented court
         arenaBox = new BoundingBox(
@@ -241,17 +246,24 @@ public abstract class GoalGame
                 center.getWorld().spawnParticle(Particle.FLAME, center, 3, 0.1, 0.1, 0.1, 0);
 
                 // Show home net boundaries (green)
-                showBoundingBox(homeNet, Particle.HAPPY_VILLAGER);
+                //showBoundingBox(homeNet, Particle.HAPPY_VILLAGER);
 
-                // Show away net boundaries (red)
-                showBoundingBox(awayNet, Particle.FLAME);
+                // ✅ ONLY show away net particles if NOT 1v1
+              //  if (!isSingleHoop) {
+                    // Show away net boundaries (red)
+                  //  showBoundingBox(awayNet, Particle.FLAME);
+               // }
 
                 // Show arena box boundaries (blue)
-                showBoundingBox(arenaBox, Particle.SOUL_FIRE_FLAME);
+                //showBoundingBox(arenaBox, Particle.SOUL_FIRE_FLAME);
 
                 // Show spawn points
                 center.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, homeSpawn, 5, 0.2, 0.2, 0.2, 0);
-                center.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, awaySpawn, 5, 0.2, 0.2, 0.2, 0);
+
+                // ✅ ONLY show away spawn particles if NOT 1v1
+                if (!isSingleHoop) {
+                    center.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, awaySpawn, 5, 0.2, 0.2, 0.2, 0);
+                }
             }
 
             private void showBoundingBox(BoundingBox box, Particle particle) {
@@ -318,8 +330,11 @@ public abstract class GoalGame
         this.points.clear();
         this.threes.clear();
         this.cancelInboundSequence();
-        this.getCenter().getWorld().getEntities().stream()
+        // Only remove ball entities within this game's area (40 block radius from center)
+        Location center = this.getCenter();
+        center.getWorld().getEntities().stream()
                 .filter(entity -> entity.getPersistentDataContainer().has(Partix.getInstance().getBallKey()))
+                .filter(entity -> entity.getLocation().distance(center) < 40.0)
                 .forEach(Entity::remove);
     }
 
@@ -466,10 +481,20 @@ public abstract class GoalGame
 
     public void removeHomePlayer(Player player) {
         this.homeTeam.remove(player);
+        
+        // Update hotkeys when team composition changes
+        if (this.getBall() instanceof me.x_tias.partix.plugin.ball.types.Basketball basketball) {
+            basketball.initializeAllTeammateHotkeys((me.x_tias.partix.mini.basketball.BasketballGame) this);
+        }
     }
 
     public void removeAwayPlayer(Player player) {
         this.awayTeam.remove(player);
+        
+        // Update hotkeys when team composition changes
+        if (this.getBall() instanceof me.x_tias.partix.plugin.ball.types.Basketball basketball) {
+            basketball.initializeAllTeammateHotkeys((me.x_tias.partix.mini.basketball.BasketballGame) this);
+        }
     }
 
     public List<Player> getAwayPlayers() {
@@ -537,6 +562,22 @@ public abstract class GoalGame
     }
 
     private void runClock() {
+        // NBA Rule: Check if game clock is frozen for inbound
+        if (this instanceof BasketballGame) {
+            BasketballGame bbGame = (BasketballGame) this;
+            if (bbGame.gameClockFrozenForInbound) {
+                System.out.println("DEBUG: Game clock PAUSED (waiting for ball pickup after inbound)");
+                return; // Exit early - clock stays frozen until ball is touched
+            }
+        }
+
+        // DON'T run clock during out of bounds states
+        if (this.state == State.OUT_OF_BOUNDS_THROW_WAIT ||
+                this.state == State.OUT_OF_BOUNDS_THROW) {
+            System.out.println("DEBUG: Game clock PAUSED (inbound in progress)");
+            return; // Exit early - clock stays frozen
+        }
+
         if (this.settings.winType.timed) {
             if (this.gameSeconds % 20 == 0 && this.gameSeconds < 105 && this.gameSeconds > 15) {
                 this.playSound(Sound.BLOCK_NOTE_BLOCK_BIT, SoundCategory.MASTER, 1.0f, 1.0f);
@@ -579,8 +620,8 @@ public abstract class GoalGame
         } else if (this.state.equals(State.FINAL)) {
             if (this.settings.gameType.equals(GameType.AUTOMATIC)) {
                 this.kickAll();
-                this.state = State.PREGAME;
-                this.startCountdown(State.PREGAME, -1);
+                // Don't reset to PREGAME for automatic/ranked games - keep in FINAL state
+                // This allows the court to be properly freed for new games
             } else {
                 this.reset();
                 this.startCountdown(State.PREGAME, -1);
@@ -638,6 +679,18 @@ public abstract class GoalGame
 
     private void goalDetection() {
         if (this.ball != null && (this.state.equals(State.REGULATION) || this.state.equals(State.OVERTIME))) {
+            // Check if this is a Basketball and if scoring should be prevented
+            if (this.ball instanceof me.x_tias.partix.plugin.ball.types.Basketball basketball) {
+                if (basketball.isShouldPreventScore()) {
+                    // Don't score - this shot was marked as a guaranteed miss
+                    return;
+                }
+                if (basketball.isLobPass()) {
+                    // Don't score - ball is still in lob pass animation
+                    return;
+                }
+            }
+            
             Location ballLoc = this.ball.getLocation();
             Vector ballVec = ballLoc.toVector();
 
@@ -708,21 +761,30 @@ public abstract class GoalGame
             })).openInventory(player);
             return;
         }
-        if (itemStack.getType().equals(Material.OAK_STAIRS)) {
-            if (BallFactory.getNearby(player.getLocation(), 3.0).size() == 0 && !AthleteManager.get(player.getUniqueId()).isSpectating()) {
-                if (this.isInBench(player)) {
-                    this.leaveBench(player);
-                } else {
-                    this.enterBench(player);
+
+        if (itemStack.getType().equals(Material.CHEST)) {
+            // ===== NEW: CHECK MBA STADIUM + COACH RESTRICTION =====
+            if (this instanceof BasketballGame) {
+                BasketballGame bbGame = (BasketballGame) this;
+                if (bbGame.isInMBAStadium()) {
+                    // MBA Arena - Require Coach or Admin permission
+                    if (!player.hasPermission("rank.coach") && !player.hasPermission("rank.admin")) {
+                        player.sendMessage(Component.text("§c§l⚠ MBA Arena Restriction"));
+                        player.sendMessage(Component.text("§cYou need §e§lCoach §crank to access game settings in MBA arenas."));
+                        player.sendMessage(Component.text("§7Ask a staff member for the Coach rank."));
+                        player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, SoundCategory.MASTER, 1.0f, 1.0f);
+                        return; // EXIT - Don't open the GUI
+                    }
+                    // Player has Coach permission - allow access
+                    player.sendMessage(Component.text("§a§lCoach Access Granted!"));
                 }
-            } else {
-                player.sendMessage(Message.cantDoThisNow());
             }
-        } else if (itemStack.getType().equals(Material.CHEST)) {
+            // ===== END MBA CHECK =====
+
             if (this.settings.gameType.equals(GameType.MANUAL)) {
                 new GUI("Game Settings", 6, false, new ItemButton(11, Items.get(Component.text("Reset Game").color(Colour.partix()), Material.RED_CONCRETE_POWDER), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to reset the game.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to reset the game.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -737,8 +799,8 @@ public abstract class GoalGame
                     this.reset();
                     this.startCountdown(State.PREGAME, -1);
                 }), new ItemButton(13, Items.get(Component.text("Ref Book").color(Colour.partix()), Material.BOOK), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to open the Ref Book.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to open the Ref Book.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -749,8 +811,8 @@ public abstract class GoalGame
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(14, Items.get(Component.text("Start Play").color(Colour.partix()), Material.YELLOW_CONCRETE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to start play.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to start play.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -761,8 +823,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(15, Items.get(Component.text("Stop Play").color(Colour.partix()), Material.ORANGE_CONCRETE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to stop play.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to stop play.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -774,8 +836,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(18, Items.get(Component.text("Enable Shot Clock").color(Colour.partix()), Material.GREEN_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to enable shot clock.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to enable shot clock.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -787,8 +849,8 @@ public abstract class GoalGame
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(19, Items.get(Component.text("Disable Shot Clock").color(Colour.partix()), Material.RED_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to disable shot clock.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to disable shot clock.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -800,8 +862,8 @@ public abstract class GoalGame
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(20, Items.get(Component.text("Reset Shot Clock").color(Colour.partix()), Material.REDSTONE_TORCH), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to reset shot clock.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to reset shot clock.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -853,8 +915,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(30, Items.get(Component.text("OT: Sudden Death").color(Colour.partix()), Material.RED_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change OT settings.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change OT settings.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -866,8 +928,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(31, Items.get(Component.text("OT: 3 Minutes Timed").color(Colour.partix()), Material.CLOCK), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change OT settings.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change OT settings.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -887,8 +949,8 @@ public abstract class GoalGame
                         ((BasketballGame) this).openTeamManagementGUI(p);
                     }
                 }), new ItemButton(41, Items.get(Component.text("Sections: 1 Match").color(Colour.partix()), Material.WHITE_CANDLE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change sections.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change sections.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -901,8 +963,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(42, Items.get(Component.text("Sections: 2 Halves").color(Colour.partix()), Material.WHITE_CANDLE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change sections.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change sections.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -915,8 +977,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(43, Items.get(Component.text("Sections: 3 Periods").color(Colour.partix()), Material.WHITE_CANDLE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change sections.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change sections.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -929,8 +991,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(44, Items.get(Component.text("Sections: 4 Quarters").color(Colour.partix()), Material.WHITE_CANDLE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change sections.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change sections.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -943,8 +1005,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(45, Items.get(Component.text("Scoring: 2 Minutes").color(Colour.partix()), Material.LIME_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -959,8 +1021,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(46, Items.get(Component.text("Scoring: 3 Minutes").color(Colour.partix()), Material.LIME_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -975,8 +1037,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(47, Items.get(Component.text("Scoring: 5 Minutes").color(Colour.partix()), Material.LIME_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -991,8 +1053,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(48, Items.get(Component.text("Scoring: 6 Minutes").color(Colour.partix()), Material.LIME_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -1007,8 +1069,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(49, Items.get(Component.text("Scoring: First to 3").color(Colour.partix()), Material.PINK_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -1020,8 +1082,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(50, Items.get(Component.text("Scoring: First to 5").color(Colour.partix()), Material.PINK_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -1033,8 +1095,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(51, Items.get(Component.text("Scoring: First to 10").color(Colour.partix()), Material.PINK_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -1046,8 +1108,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(52, Items.get(Component.text("Scoring: First to 15").color(Colour.partix()), Material.PINK_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -1059,8 +1121,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(53, Items.get(Component.text("Scoring: First to 21").color(Colour.partix()), Material.PINK_DYE), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to change scoring options.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to change scoring options.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -1072,8 +1134,8 @@ public abstract class GoalGame
                         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(37, Items.get(Component.text("Rebound Machine: ON").color(Colour.allow()), Material.SLIME_BALL), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to toggle rebound machine.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to toggle rebound machine.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -1092,8 +1154,8 @@ public abstract class GoalGame
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                     }
                 }), new ItemButton(38, Items.get(Component.text("Rebound Machine: OFF").color(Colour.deny()), Material.BARRIER), p -> {
-                    if (!p.hasPermission("rank.vip")) {
-                        p.sendMessage("§cVIP rank required to toggle rebound machine.");
+                    if (!p.hasPermission("rank.vip") && !this.canEditGame(p)) {
+                        p.sendMessage("§cVIP rank or court ownership required to toggle rebound machine.");
                         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_FALL, SoundCategory.MASTER, 1.0f, 1.0f);
                         return;
                     }
@@ -1126,27 +1188,52 @@ public abstract class GoalGame
     }
 
     public void enterBench(Player player) {
-        BasketballGame bg;
-        Location bench = getTeamOf(player) == Team.HOME ? this.homeSpawn : this.awaySpawn;
-        GoalGame goalGame = this;
-        if (goalGame instanceof BasketballGame && (bg = (BasketballGame) goalGame).getCourtLength() == 32.0) {
-            bench.add(0.0, 0.0, -4.0);
+        GoalGame.Team team = getTeamOf(player);
+        if (team == null) return;
+
+        BoundingBox arenaBox = this.getArenaBox();
+        Location benchSpot = this.getCenter().clone();
+
+        if (team == Team.HOME) {
+            benchSpot.setX(arenaBox.getMinX() - 4.0);  // ← FIXED: Use X for sideline
+        } else {
+            benchSpot.setX(arenaBox.getMaxX() + 4.0);  // ← FIXED: Use X for sideline
         }
-        player.teleport(bench);
+
+        benchSpot.setZ(this.getCenter().getZ());  // ← FIXED: Keep centered on Z
+        benchSpot.setY(this.getCenter().getY());
+
+        player.teleport(benchSpot);
         Cooldown.setRestricted(player.getUniqueId(), 20);
+        
+        // Update hotkeys when team composition changes
+        if (this.getBall() instanceof me.x_tias.partix.plugin.ball.types.Basketball basketball) {
+            basketball.initializeAllTeammateHotkeys((me.x_tias.partix.mini.basketball.BasketballGame) this);
+        }
     }
 
     public void leaveBench(Player player) {
-        Location location = player.getLocation().clone();
-        location.setZ(this.center.getZ() - 12.5);
-        player.teleport(location);
+        GoalGame.Team team = getTeamOf(player);
+        if (team == null) return;
+
+        Location returnSpot = (team == Team.HOME) ? this.getHomeSpawn() : this.getAwaySpawn();
+        player.teleport(returnSpot);
+
         player.addPotionEffect(new PotionEffect(PotionEffectType.BLINDNESS, 10, 2, true, false));
         player.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 50, 1, true, false));
         Cooldown.setRestricted(player.getUniqueId(), 10);
+        
+        // Update hotkeys when team composition changes
+        if (this.getBall() instanceof me.x_tias.partix.plugin.ball.types.Basketball basketball) {
+            basketball.initializeAllTeammateHotkeys((me.x_tias.partix.mini.basketball.BasketballGame) this);
+        }
     }
 
     public boolean isInBench(Player player) {
-        return player.getLocation().getZ() < this.center.getZ() - 14.5;
+        BoundingBox arenaBox = this.getArenaBox();
+        double playerX = player.getLocation().getX();
+
+        return playerX < arenaBox.getMinX() - 1.0 || playerX > arenaBox.getMaxX() + 1.0;
     }
 
     public void updateArmor() {

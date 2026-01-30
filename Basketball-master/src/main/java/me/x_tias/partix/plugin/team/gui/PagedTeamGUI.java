@@ -69,7 +69,7 @@ public final class PagedTeamGUI {
     }
 
     private static List<BaseTeam> mbaTeams() {
-        return List.of(new TeamFlamingoFlyers(), new TeamBandits(), new TeamKoalas(), new TeamPatriots(), new TeamBison(), new TeamCerberus());
+        return List.of(new Team64s(), new TeamAllays(), new TeamArrows(), new TeamMinecarts(), new TeamBows(), new TeamBreeze(), new TeamBuckets(), new TeamChickens(), new TeamCreepers(), new TeamDiamonds(), new TeamDiscs(), new TeamDragons(), new TeamFireworks(), new TeamGolems(), new TeamGuardians(), new TeamIngots(), new TeamMagma(), new TeamMending(), new TeamMooshrooms(), new TeamNetherite(), new TeamOaks(), new TeamOcelots(), new TeamOres(), new TeamPhantoms(), new TeamPortals(), new TeamShulkers(), new TeamStriders(), new TeamSwords(), new TeamTotems(), new TeamWithers());
     }
 
     private static List<BaseTeam> nbaTeams() {

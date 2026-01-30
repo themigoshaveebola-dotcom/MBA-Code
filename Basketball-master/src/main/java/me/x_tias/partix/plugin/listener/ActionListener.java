@@ -30,6 +30,7 @@ import me.x_tias.partix.plugin.ball.BallType;
 import me.x_tias.partix.plugin.ball.event.*;
 import me.x_tias.partix.plugin.ball.types.Basketball;
 import me.x_tias.partix.plugin.mechanic.Mechanic;
+import me.x_tias.partix.plugin.rightclick.events.PlayerRightClickStartHoldEvent;
 import me.x_tias.partix.plugin.rightclick.events.PlayerRightClickStopHoldEvent;
 import me.x_tias.partix.server.Place;
 import net.kyori.adventure.text.Component;
@@ -58,6 +59,9 @@ import java.util.UUID;
 
 public class ActionListener
         implements Listener {
+    private static final Map<UUID, Long> recentDashes = new HashMap<>();
+    private static final long DASH_JUMP_LOCK_MS = 500; // 0.5 seconds
+    
     @EventHandler
     public void onHitBall(PlayerHitBallEvent e) {
         Ball ball = e.getBall();
@@ -79,6 +83,27 @@ public class ActionListener
     }
 
     private final Map<UUID, Basketball> activeDunkMeters = new HashMap<>();
+    
+    @EventHandler
+    public void onRightClickStart(PlayerRightClickStartHoldEvent event) {
+        final Player player = event.getPlayer();
+        final Athlete athlete = AthleteManager.get(player.getUniqueId());
+        if (athlete.isSpectating()) {
+            return;
+        }
+
+        // When player STARTS holding right-click (meter starts), calculate contest for jump shots
+        for (Ball ball : BallFactory.getNearby(player.getLocation(), 3.5)) {
+            if (!(ball instanceof Basketball basketball)) continue;
+            if (basketball.getCurrentDamager() == null || !basketball.getCurrentDamager().equals(player)) continue;
+            
+            // Only calculate contest at meter start if player will be shooting (in air)
+            // This captures the contest at the START of the shot meter
+            basketball.calculateAndStoreContestAtMeterStart(player);
+            break;
+        }
+    }
+    
     @EventHandler
     public void onRightClickRelease(PlayerRightClickStopHoldEvent event) {
         final Player player = event.getPlayer();
@@ -106,15 +131,28 @@ public class ActionListener
     public void onLeftClick(PressLeftClickEvent e) {
         Player player = e.getPlayer();
         if (!e.getAthlete().isSpectating()) {
-            // Register block attempt for nearby dunks
-            for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
+            // ===== LAYUP BLOCK DETECTION (check first, before other actions) =====
+            for (Ball ball : BallFactory.getNearby(player.getLocation(), 5.0)) {
                 if (ball instanceof Basketball basketball) {
+                    // Check if this is a layup in flight
+                    if (basketball.isLayupAttempt && basketball.getCurrentDamager() == null) {
+                        // Player clicked near a layup in flight - attempt block
+                        basketball.registerLayupBlockAttempt(player);
+                        // Don't return here - let other block attempts register too
+                    }
+
+                    // Register block attempt for dunks (existing code)
                     basketball.registerDefenderBlockAttempt(player);
+
+                    // FIXED: Use correct variable names
+                    if (basketball.getCurrentDamager() != null) {
+                        basketball.onDefenderClickedBallHandler(player, basketball.getCurrentDamager());
+                    }
                 }
             }
 
-            // Existing code for passing/other actions
-            BallFactory.getNearest(player.getLocation(), 2.3).ifPresent(ball ->
+            // ===== BUFFED STEAL RANGE: Now 4.5 blocks instead of 2.3 =====
+            BallFactory.getNearest(player.getLocation(), 2.67).ifPresent(ball ->
                     Mechanic.leftClick(player, ball, e.isThrownInBlock()));
         }
     }
@@ -133,7 +171,7 @@ public class ActionListener
     public void onSwapHands(PlayerSwapHandItemsEvent event) {
         Player player = event.getPlayer();
 
-        for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
+        for (Ball ball : BallFactory.getNearby(player.getLocation(), 8.0)) {
             if (!(ball instanceof Basketball basketball)) {
                 continue;
             }
@@ -168,29 +206,8 @@ public class ActionListener
                 player.playSound(player.getLocation(), Sound.BLOCK_WOODEN_DOOR_OPEN, 1.0f, 1.0f);
             }
 
-            // Timeout call (player on ground, not dunking)
-            if (player.isOnGround() && !bball.getDunkMeterActive()) {
-                final BasketballGame game = bball.getGame();
-                final GoalGame.Team theirTeam = game.getTeamOf(player);
-                for (int i = 0; i < player.getInventory().getSize(); ++i) {
-                    ItemStack it = player.getInventory().getItem(i);
-                    if (it == null || it.getType() != Material.POLISHED_BLACKSTONE_BUTTON) continue;
-                    player.getInventory().setItem(i, null);
-                    break;
-                }
-                player.updateInventory();
-                Location spawnLoc = player.getEyeLocation().clone().add(0.0, -0.5, 0.0);
-                final Ball fakeInboundBall = BallFactory.create(spawnLoc, BallType.BASKETBALL, game);
-                fakeInboundBall.setVelocity(0.0, 0.1, 0.0);
-                new BukkitRunnable() {
-                    public void run() {
-                        BallFactory.remove(fakeInboundBall);
-                        game.callTimeout(theirTeam);
-                    }
-                }.runTaskLater(Partix.getInstance(), 1L);
-                e.setKeepItem(false);
-                return;
-            }
+            e.setKeepItem(false);
+            return;
         }
     }
 
@@ -200,8 +217,8 @@ public class ActionListener
         int slot = event.getNewSlot();
         Player player = event.getPlayer();
 
-        if (slot == 2) {
-            // BTB (Behind-the-Back) on slot 2
+        if (slot == 3) {
+            // BTB (Behind-the-Back) on slot 3 (hotkey 4)
             for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
                 if (!(ball instanceof Basketball basketball)) continue;
 
@@ -211,8 +228,8 @@ public class ActionListener
                 basketball.behindTheBack(player);
                 break;
             }
-        } else if (slot == 3) {
-            // Hesi on slot 3
+        } else if (slot == 4) {
+            // Hesi on slot 4 (hotkey 5)
             for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
                 if (!(ball instanceof Basketball basketball)) continue;
 
@@ -222,8 +239,8 @@ public class ActionListener
                 basketball.hesi(player);
                 break;
             }
-        } else if (slot == 4) {
-            // Crossover on slot 4
+        } else if (slot == 5) {
+            // Crossover on slot 5 (hotkey 6)
             for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
                 if (!(ball instanceof Basketball basketball)) continue;
 
@@ -233,15 +250,92 @@ public class ActionListener
                 basketball.crossover(player);
                 break;
             }
-        } else if (slot == 5) {
-            // Stepback on slot 5
+        } else if (slot == 6) {
+            // ===== HOTKEY 7: Stepback (with ball) OR Dash (defense without ball) =====
+            boolean actionTaken = false;
+            
+            // First check: Stepback if player has the ball
+            for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
+                if (!(ball instanceof Basketball basketball)) continue;
+
+                if (basketball.getCurrentDamager() != null && basketball.getCurrentDamager().equals(player)) {
+                    event.setCancelled(true);
+                    basketball.stepback(player);
+                    actionTaken = true;
+                    break;
+                }
+            }
+            
+            // Second check: Dash if no ball (defense only, handled in dash() method)
+            if (!actionTaken) {
+                for (Ball ball : BallFactory.getNearby(player.getLocation(), 100.0)) {
+                    if (!(ball instanceof Basketball basketball)) continue;
+
+                    // Always cancel event and switch back, regardless of success
+                    event.setCancelled(true);
+                    if (basketball.dash(player)) {
+                        // Track dash time to prevent jump exploit
+                        recentDashes.put(player.getUniqueId(), System.currentTimeMillis());
+                    }
+                    
+                    // Auto-switch back to slot 1
+                    new BukkitRunnable() {
+                        @Override
+                        public void run() {
+                            if (player.isOnline()) {
+                                player.getInventory().setHeldItemSlot(0);
+                            }
+                        }
+                    }.runTaskLater(Partix.getInstance(), 1L);
+                    
+                    return;
+                }
+            }
+        } else if (slot == 1 || slot == 2) {
+            // ===== TRACK PASS HOTKEYS: Slots 1 & 2 (Hotkeys 2 & 3) =====
+            int hotkey = (slot == 1) ? 2 : 3;
+
+            // Track Pass hotkey pressed (2 or 3)
             for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
                 if (!(ball instanceof Basketball basketball)) continue;
 
                 if (basketball.getCurrentDamager() == null || !basketball.getCurrentDamager().equals(player)) continue;
 
+                // Get teammate assigned to this hotkey
+                Player teammate = basketball.getTeammateByHotkey(hotkey, player);
+
+                if (teammate == null) {
+                    // Determine error message based on situation
+                    GoalGame.Team playerTeam = basketball.getGame().getTeamOf(player);
+                    if (playerTeam == null) {
+                        player.sendActionBar(Component.text("Error getting team!").color(NamedTextColor.RED));
+                        event.setCancelled(true);
+                        return;
+                    }
+
+                    java.util.List<Player> teamPlayers = playerTeam == GoalGame.Team.HOME
+                            ? basketball.getGame().getHomePlayers()
+                            : basketball.getGame().getAwayPlayers();
+
+                    if (teamPlayers.size() <= 1) {
+                        player.sendActionBar(Component.text("No teammates to pass to!").color(NamedTextColor.RED));
+                    } else if (teamPlayers.size() == 2) {
+                        // Only 1 teammate, only slot 1 is valid
+                        if (hotkey == 3) {
+                            player.sendActionBar(Component.text("You only have 1 teammate! Use Key 2").color(NamedTextColor.RED));
+                        } else {
+                            player.sendActionBar(Component.text("Teammate not found!").color(NamedTextColor.RED));
+                        }
+                    } else {
+                        player.sendActionBar(Component.text("Teammate not assigned to this key!").color(NamedTextColor.RED));
+                    }
+                    event.setCancelled(true);
+                    return;
+                }
+
+                // Execute track pass
                 event.setCancelled(true);
-                basketball.stepback(player);
+                basketball.trackPass(player, teammate);
                 break;
             }
         }
@@ -280,6 +374,7 @@ public class ActionListener
     public void onQuit(PlayerQuitEvent event) {
         WAITING_FOR_THROW_PLAYERS.remove(event.getPlayer());
         activeDunkMeters.remove(event.getPlayer().getUniqueId());
+        recentDashes.remove(event.getPlayer().getUniqueId());
     }
 
     @EventHandler
@@ -362,7 +457,19 @@ public class ActionListener
             player.removePotionEffect(PotionEffectType.JUMP_BOOST);
         }
 
-        // ADD THIS - Register block attempts for dunks
+        // Check for dash jump lock - prevent jumping immediately after dashing
+        Long lastDashTime = recentDashes.get(player.getUniqueId());
+        if (lastDashTime != null) {
+            long timeSinceDash = System.currentTimeMillis() - lastDashTime;
+            if (timeSinceDash < DASH_JUMP_LOCK_MS) {
+                event.setCancelled(true);
+                return;
+            } else {
+                recentDashes.remove(player.getUniqueId());
+            }
+        }
+
+        // Register block attempts for dunks
         for (Ball ball : BallFactory.getNearby(player.getLocation(), 4.0)) {
             if (ball instanceof Basketball basketball) {
                 basketball.registerDefenderBlockAttempt(player);

@@ -6,13 +6,13 @@
  */
 package me.x_tias.partix.database;
 
-import org.bukkit.entity.Player;
-
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.Properties;
 import java.util.UUID;
+
+import org.bukkit.entity.Player;
 
 public class Databases {
     public static void setup() {
@@ -20,6 +20,7 @@ public class Databases {
             BasketballDb.setup();
             SeasonDb.setup();
             PlayerDb.setup();
+            // PlayerDb.fixCrateDataColumn(); // Method doesn't exist
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
@@ -33,19 +34,19 @@ public class Databases {
     }
 
     public static String getUrl() {
-        return "jdbc:mysql://sql1.revivenode.com:3306/";
+        return "jdbc:mysql://us01-sql.pebblehost.com:3306/";
     }
 
     public static String getName() {
-        return "s33066_MBA";
+        return "customer_1273413_minecraftbasketball";
     }
 
     public static String getUsername() {
-        return "u33066_lxlvlVUN8X";
+        return "customer_1273413_minecraftbasketball";
     }
 
     public static String getPassword() {
-        return "=j22tJcO3+=vXg@jFNSzma6L";
+        return "MhHWg^4.D3jK.wk.e=daMB2H";
     }
 
     public static boolean contains(UUID playerId, String key) {

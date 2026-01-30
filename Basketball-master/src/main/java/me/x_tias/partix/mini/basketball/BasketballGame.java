@@ -35,11 +35,14 @@ package me.x_tias.partix.mini.basketball;
 
 import lombok.Getter;
 import lombok.Setter;
+
 import java.time.Duration;
 import net.kyori.adventure.title.Title;
 import net.kyori.adventure.title.TitlePart;
 import me.x_tias.partix.Partix;
 import me.x_tias.partix.database.BasketballDb;
+import dev.lone.itemsadder.api.CustomStack;
+import org.bukkit.inventory.meta.LeatherArmorMeta;
 import me.x_tias.partix.database.PlayerDb;
 import me.x_tias.partix.database.SeasonDb;
 import me.x_tias.partix.mini.anteup.AnteUpManager;
@@ -87,6 +90,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class BasketballGame
         extends GoalGame {
@@ -111,6 +115,12 @@ public class BasketballGame
     public boolean inboundingActive = false;
     public Player inbounder;
     private int stoppageTicks = 100;
+    public int getAwayTimeouts() {
+        return this.awayTimeouts;
+    }
+    public int getHomeTimeouts() {
+        return this.homeTimeouts;
+    }
     private Location stoppageLastLocation;
     @Getter
     private int shotClockTicks = 480;
@@ -118,18 +128,27 @@ public class BasketballGame
     private int timeoutSecs = 0;
     private final boolean shotClockFrozen = false;
     private boolean justScored = false; // NEW: Track if a goal just happened
-    private boolean isSingleHoopMode;
-    private boolean isHalfCourt1v1;
+    public boolean isSingleHoopMode;
+    public boolean pressPrevention = false;
+    public GoalGame.Team restrictedTeam = null;
+    public boolean isHalfCourt1v1;
+    public boolean isRecGame = false; // Flag to identify Rec games
+    public boolean isPhysicalQueueGame = false; // Flag to identify physical queue games
     private boolean needsPositionReset = false;
     private long resetStartTime = 0L;
+    private long pressPreventionStartTime = 0L;
+    private static final long PRESS_PREVENTION_TIMEOUT = 8000L; // 8 seconds in milliseconds
     private static final long RESET_DELAY = 3000L;
     private UUID offensivePlayer = null;
     private UUID defensivePlayer = null;
+    private UUID homeCoach = null;
+    private UUID awayCoach = null;
     private boolean shotAttemptDetected = false;
     private boolean shotClockStopped = false;
-    private boolean shotClockFrozenForInbound = false;
-    private boolean inboundTouchedByInbounder = false;
-    private boolean inbounderHasReleased = false;
+    public boolean shotClockFrozenForInbound = false; // NBA rule: shot clock pauses on OOB
+    public boolean gameClockFrozenForInbound = false; // NBA rule: game clock pauses on OOB
+    public boolean inboundTouchedByInbounder = false;
+    public boolean inbounderHasReleased = false;
     public GoalGame.Team inboundingTeam;
     public Location inboundSpot;
     private BukkitTask inboundBarrierTask;
@@ -138,11 +157,16 @@ public class BasketballGame
     private GoalGame.Team shotAttemptTeam = null;
     private GoalGame.Team lastPossessionTeam = null;
     private boolean shotClockEnabled = true;
+    private boolean quarterBuzzerPlayed = false;
     private boolean buzzerPlayed = false;
     private UUID currentPossessor = null;
     private long possessionStartTime = 0L;
-    private long inboundPassTime = 0L; // Track when inbounder passed the ball
+    private long activeGameStartTime = 0L; // Track when REGULATION/OVERTIME started
+    private Map<UUID, Long> playerCourtTime = new HashMap<>(); // Track last update time per player
+    public long inboundPassTime = 0L; // Track when inbounder passed the ball
+    public long inboundStartTime = 0L; // Track when inbound sequence started (for 5s timeout)
     private static final long INBOUND_OOB_DELAY = 1000L; // 1 second grace period in milliseconds
+    private static final long INBOUND_TIMEOUT = 5000L; // 5 second safety timeout for inbound
     private static final long REBOUND_COOLDOWN_MS = 2000L; // 2 seconds in milliseconds
     private int homeTimeouts = 4;
     private int awayTimeouts = 4;
@@ -156,6 +180,7 @@ public class BasketballGame
     @Setter
     private Team outOfBoundsLostTeam;
     @Setter
+    @Getter
     private boolean outOfBoundsImmunity = false;
     @Getter
     private boolean outOfBoundsSide;
@@ -170,18 +195,44 @@ public class BasketballGame
     @Getter
     private BoundingBox awayJump;
 
+    public boolean isInMBAStadium() {
+        Location gameLoc = this.getLocation();
+
+        double[][] mbaCoords = {
+                {448.5, -61, 963.5},    // Washington Withers
+                {-42.5, -61, 963.5},    // Philadelphia 64s
+                {-532.5, -61, 963.5},   // Chicago Bows
+                {-532.5, -61, 452.5},   // Brooklyn Buckets
+                {-576.5, -61, -510.5},  // Miami Magma Cubes
+                {-576.5, -61, -19.5},   // Golden State Guardians
+                {576.5, -61, -510.5},   // Atlanta Allays
+                {576.5, -61, -19.5},    // LA Creepers
+                {190.5, -61, -1000.5}    // Boston Breeze (NEW)
+        };
+
+        for (double[] coord : mbaCoords) {
+            if (Math.abs(gameLoc.getX() - coord[0]) < 1.0 &&
+                    Math.abs(gameLoc.getY() - coord[1]) < 1.0 &&
+                    Math.abs(gameLoc.getZ() - coord[2]) < 1.0) {
+                return true;
+            }
+        }
+        return false;
+    }
     public BasketballGame(Settings settings, Location location, double xDistance, double yDistance, double xLength, double zWidth, double yHeight) {
-        this.setup(settings.copy(), location, xDistance, yDistance, xLength, zWidth, yHeight);
         this.courtLength = xDistance;
         this.location = location.clone();
 
-        // Detect 1v1 half-court
+        // ✅ Detect 1v1 half-court FIRST - BEFORE setup()
         this.isHalfCourt1v1 = (xDistance == 13.0 && settings.playersPerTeam == 1);
         this.isSingleHoopMode = this.isHalfCourt1v1;
 
         if (this.isHalfCourt1v1) {
             Bukkit.getLogger().info("✓ Half-court 1v1 detected - First to 21 with Win by 2");
         }
+
+        // ✅ NOW call setup() - it will see the flags are already set
+        this.setup(settings.copy(), location, xDistance, yDistance, xLength, zWidth, yHeight);
 
         this.homeJump = this.getJumpBox(this.getHomeSpawn());
         this.awayJump = this.getJumpBox(this.getAwaySpawn());
@@ -197,6 +248,25 @@ public class BasketballGame
         this.statsManager.resetStats();
         this.lastReboundTime.clear();
         this.justScored = false; // NEW: Clear flag
+        
+        // Clear press prevention on reset
+        this.pressPrevention = false;
+        this.pressPreventionStartTime = 0L;
+        this.restrictedTeam = null;
+        System.out.println("Press prevention cleared - Stats/play reset");
+        
+        // Clear clock freeze flags on reset
+        this.shotClockFrozenForInbound = false;
+        this.gameClockFrozenForInbound = false;
+        System.out.println("Clock freeze flags cleared - Stats/play reset");
+        
+        // Clear inbound state on reset
+        this.inboundingActive = false;
+        this.inbounder = null;
+        this.inboundTouchedByInbounder = false;
+        this.inbounderHasReleased = false;
+        this.inboundStartTime = 0L;
+        System.out.println("Inbound state cleared - Stats/play reset");
 
         for (Player p : this.getHomePlayers()) {
             p.sendMessage(Component.text("Your stats have been reset.").color(Colour.allow()));
@@ -204,6 +274,175 @@ public class BasketballGame
         for (Player p : this.getAwayPlayers()) {
             p.sendMessage(Component.text("Your stats have been reset.").color(Colour.allow()));
         }
+    }
+
+    public void setCoach(GoalGame.Team team, UUID playerUUID) {
+        if (team == GoalGame.Team.HOME) {
+            this.homeCoach = playerUUID;
+        } else if (team == GoalGame.Team.AWAY) {
+            this.awayCoach = playerUUID;
+        }
+    }
+
+    public UUID getCoach(GoalGame.Team team) {
+        if (team == GoalGame.Team.HOME) {
+            return this.homeCoach;
+        } else if (team == GoalGame.Team.AWAY) {
+            return this.awayCoach;
+        }
+        return null;
+    }
+    public boolean isCoach(UUID playerUUID) {
+        return playerUUID.equals(this.homeCoach) || playerUUID.equals(this.awayCoach);
+    }
+    public GoalGame.Team getCoachTeam(UUID playerUUID) {
+        if (playerUUID.equals(this.homeCoach)) {
+            return GoalGame.Team.HOME;
+        } else if (playerUUID.equals(this.awayCoach)) {
+            return GoalGame.Team.AWAY;
+        }
+        return null;
+    }
+    public void removeCoach(UUID playerUUID) {
+        if (playerUUID.equals(this.homeCoach)) {
+            this.homeCoach = null;
+        } else if (playerUUID.equals(this.awayCoach)) {
+            this.awayCoach = null;
+        }
+    }
+    private void clearCoachIfPresent(UUID playerUUID) {
+        if (this.isCoach(playerUUID)) {
+            this.removeCoach(playerUUID);
+            this.sendMessage(Component.text("🎯 Coach " + Bukkit.getPlayer(playerUUID).getName() + " has left the game.").color(Colour.partix()));
+        }
+    }
+
+    private void checkPressPrevention() {
+        // SKIP FOR 1V1 GAMES
+        if (this.isHalfCourt1v1 || this.isSingleHoopMode) {
+            this.pressPrevention = false;
+            this.pressPreventionStartTime = 0L; // ✅ RESET TIMER
+            this.restrictedTeam = null;
+            return;
+        }
+
+        // Only enforce if press prevention is active
+        if (!this.pressPrevention || this.restrictedTeam == null) {
+            return;
+        }
+
+        // Get center line and hoop locations
+        double centerZ = this.getCenter().getZ();
+        Location homeHoopCenter = this.getHomeNet().getCenter().toLocation(this.getCenter().getWorld());
+        Location awayHoopCenter = this.getAwayNet().getCenter().toLocation(this.getCenter().getWorld());
+
+        // Get the restricted players (defensive team)
+        List<Player> restrictedPlayers = this.restrictedTeam == Team.HOME ?
+                this.getHomePlayers() : this.getAwayPlayers();
+
+        // Get the inbounding team
+        GoalGame.Team inboundingTeam = this.restrictedTeam == Team.HOME ? Team.AWAY : Team.HOME;
+
+        // FIXED: Press prevention only protects the inbounding team's DEFENSIVE half (where their hoop is)
+        // The inbounding team is on offense, so we protect their backcourt (their own hoop)
+        Location protectedHoop = inboundingTeam == Team.HOME ? homeHoopCenter : awayHoopCenter;
+        double protectedZ = protectedHoop.getZ();
+
+        // Determine which direction is the protected zone (toward their own hoop)
+        boolean homeHoopIsPositiveZ = homeHoopCenter.getZ() > centerZ;
+
+        // For each restricted player, check if they're in the protected zone
+        for (Player player : restrictedPlayers) {
+            if (player == null || !player.isOnline()) continue;
+
+            double playerZ = player.getLocation().getZ();
+
+            // Check if player is in the protected half (inbounding team's defensive half)
+            boolean isInProtectedZone;
+            if (inboundingTeam == Team.HOME) {
+                // Home is inbounding - protect home's defensive half (toward home hoop)
+                if (homeHoopIsPositiveZ) {
+                    isInProtectedZone = playerZ > centerZ; // Home hoop is positive Z
+                } else {
+                    isInProtectedZone = playerZ < centerZ; // Home hoop is negative Z
+                }
+            } else {
+                // Away is inbounding - protect away's defensive half (toward away hoop)
+                if (homeHoopIsPositiveZ) {
+                    isInProtectedZone = playerZ < centerZ; // Away hoop is negative Z
+                } else {
+                    isInProtectedZone = playerZ > centerZ; // Away hoop is positive Z
+                }
+            }
+
+            // If in protected zone, push them back to half court
+            if (isInProtectedZone) {
+                // Calculate push direction (toward half court)
+                Vector pushDirection = new Vector();
+
+                if (inboundingTeam == Team.HOME) {
+                    // Push away team back toward half court
+                    if (homeHoopIsPositiveZ) {
+                        pushDirection.setZ(-0.5); // Push toward center (negative)
+                    } else {
+                        pushDirection.setZ(0.5); // Push toward center (positive)
+                    }
+                } else {
+                    // Push home team back toward half court
+                    if (homeHoopIsPositiveZ) {
+                        pushDirection.setZ(0.5); // Push toward center (positive)
+                    } else {
+                        pushDirection.setZ(-0.5); // Push toward center (negative)
+                    }
+                }
+
+                player.setVelocity(pushDirection);
+            }
+        }
+    }
+
+    private void checkPressPreventionWithLateGameException() {
+        // SKIP FOR 1V1 GAMES
+        if (this.isHalfCourt1v1 || this.isSingleHoopMode) {
+            this.pressPrevention = false;
+            this.pressPreventionStartTime = 0L; // ✅ RESET TIMER
+            this.restrictedTeam = null;
+            return;
+        }
+
+        // Only enforce if press prevention is active
+        if (!this.pressPrevention || this.restrictedTeam == null) {
+            return;
+        }
+
+        // ✅ SAFETY FALLBACK: Auto-disable after 8 seconds
+        long currentTime = System.currentTimeMillis();
+        if (this.pressPreventionStartTime > 0) {
+            long elapsed = currentTime - this.pressPreventionStartTime;
+            if (elapsed > PRESS_PREVENTION_TIMEOUT) {
+                System.out.println("⚠️ Press prevention auto-disabled after 8 seconds (safety fallback)");
+                this.pressPrevention = false;
+                this.restrictedTeam = null;
+                this.pressPreventionStartTime = 0L;
+                return;
+            }
+        }
+
+        // Check if under 1 minute (1200 ticks = 60 seconds)
+        int gameTime = this.getTimeTicks();
+        if (gameTime < 1200) {
+            // Under 1 minute - disable press prevention if it's active
+            if (this.pressPrevention) {
+                this.pressPrevention = false;
+                this.restrictedTeam = null;
+                this.pressPreventionStartTime = 0L;
+                System.out.println("✓ Press prevention lifted - Under 1 minute remaining (" + (gameTime / 20) + " seconds)");
+            }
+            return;
+        }
+
+        // Enforce press prevention
+        this.checkPressPrevention();
     }
 
     public void resetReboundMachineStats() {
@@ -228,77 +467,135 @@ public class BasketballGame
         this.shotClockStopped = false;
         this.shotAttemptDetected = false;
         this.shotAttemptTeam = null;
+        this.quarterBuzzerPlayed = false;
+
     }
+    // NEW METHOD: Accept the scorer as a parameter (MAKE IT TAKE IT)
+    public void resetHalfCourt1v1PositionsWithOffense(Player offensivePlayer) {
+        if (!this.isHalfCourt1v1) {
+            return;
+        }
+
+        if (offensivePlayer == null || !offensivePlayer.isOnline()) {
+            Bukkit.getLogger().warning("❌ No valid offensive player for 1v1 reset");
+            return;
+        }
+
+        // Find the defensive player (the OTHER player)
+        List<Player> allPlayers = new ArrayList<>();
+        allPlayers.addAll(this.getHomePlayers());
+        allPlayers.addAll(this.getAwayPlayers());
+
+        if (allPlayers.size() != 2) {
+            Bukkit.getLogger().warning("❌ 1v1 game doesn't have exactly 2 players!");
+            return;
+        }
+
+        Player defensivePlayer = null;
+        for (Player p : allPlayers) {
+            if (!p.equals(offensivePlayer)) {
+                defensivePlayer = p;
+                break;
+            }
+        }
+
+        if (defensivePlayer == null) {
+            Bukkit.getLogger().warning("❌ Could not find defensive player!");
+            return;
+        }
+
+        Bukkit.getLogger().info("✓ MAKE IT TAKE IT: " + offensivePlayer.getName() + " scored, gets ball back");
+
+        // Now call the position reset with the correct players
+        this.resetHalfCourt1v1PositionsInternal(offensivePlayer, defensivePlayer);
+    }
+
+    // REFACTORED: Original method now just finds players randomly (for game start)
     private void resetHalfCourt1v1Positions() {
         if (!this.isHalfCourt1v1) {
             return;
         }
 
-        Player offensivePlayer = null;
-        Player defensivePlayer = null;
+        List<Player> allPlayers = new ArrayList<>();
+        allPlayers.addAll(this.getHomePlayers());
+        allPlayers.addAll(this.getAwayPlayers());
 
-        // Determine who has possession
-        if (this.getBall() != null) {
-            Player ballHolder = this.getBall().getCurrentDamager();
-
-            if (ballHolder != null) {
-                offensivePlayer = ballHolder;
-
-                List<Player> allPlayers = new ArrayList<>();
-                allPlayers.addAll(this.getHomePlayers());
-                allPlayers.addAll(this.getAwayPlayers());
-
-                for (Player p : allPlayers) {
-                    if (!p.equals(offensivePlayer)) {
-                        defensivePlayer = p;
-                        break;
-                    }
-                }
-            }
+        if (allPlayers.size() != 2) {
+            return;
         }
 
-        // Fallback
-        if (offensivePlayer == null || defensivePlayer == null) {
-            if (!this.getHomePlayers().isEmpty() && !this.getAwayPlayers().isEmpty()) {
-                offensivePlayer = this.getHomePlayers().get(0);
-                defensivePlayer = this.getAwayPlayers().get(0);
-            } else {
-                return;
-            }
+        // For initial reset (not after scoring), just pick randomly
+        Player offensivePlayer = allPlayers.get(0);
+        Player defensivePlayer = allPlayers.get(1);
+
+        Bukkit.getLogger().info("✓ Initial 1v1 position reset (random assignment)");
+        this.resetHalfCourt1v1PositionsInternal(offensivePlayer, defensivePlayer);
+    }
+
+    // INTERNAL METHOD: Does the actual positioning work
+    private void resetHalfCourt1v1PositionsInternal(Player offensivePlayer, Player defensivePlayer) {
+        if (!this.isHalfCourt1v1) {
+            return;
         }
 
-        this.removeBalls();
-
-        Location homeHoopCenter = this.getHomeNet().getCenter().toLocation(offensivePlayer.getWorld());
+        World world = offensivePlayer.getWorld();
+        Location homeHoopCenter = this.getHomeNet().getCenter().toLocation(world);
         Location centerOfCourt = this.getCenter().clone();
 
         double direction = homeHoopCenter.getZ() > centerOfCourt.getZ() ? 1.0 : -1.0;
 
-        // Offensive player at half-court + 1-2 blocks
+        // ✅ OFFENSIVE player at 3-point line (top of the key) - FURTHER from hoop
         Location offensiveSpawn = centerOfCourt.clone();
-        offensiveSpawn.setZ(centerOfCourt.getZ() + (1.5 * direction));
+        offensiveSpawn.setZ(centerOfCourt.getZ() - (6.5 * direction));
         offensiveSpawn.setX(homeHoopCenter.getX());
+        offensiveSpawn.setY(world.getHighestBlockYAt((int)offensiveSpawn.getX(), (int)offensiveSpawn.getZ()) + 1.0);
+        offensiveSpawn.setPitch(0);
+        offensiveSpawn.setYaw(0);
 
-        World world = offensivePlayer.getWorld();
-        int groundY = world.getHighestBlockYAt((int) offensiveSpawn.getX(), (int) offensiveSpawn.getZ());
-        offensiveSpawn.setY(groundY + 1.0);
+        // ✅ DEFENSIVE player closer to rim (paint area) - CLOSER to hoop
+        Location defensiveSpawn = centerOfCourt.clone();
+        defensiveSpawn.setZ(centerOfCourt.getZ() + (3.0 * direction));
+        defensiveSpawn.setX(homeHoopCenter.getX());
+        defensiveSpawn.setY(world.getHighestBlockYAt((int)defensiveSpawn.getX(), (int)defensiveSpawn.getZ()) + 1.0);
+        defensiveSpawn.setPitch(0);
+        defensiveSpawn.setYaw(0);
 
-        // Defensive player at 3-point line
-        Location defensiveSpawn = offensiveSpawn.clone();
-        defensiveSpawn.setZ(offensiveSpawn.getZ() - (6.5 * direction));
+        // ===== REMOVE CURRENT BALL FIRST =====
+        this.removeBalls();
 
-        int defGroundY = world.getHighestBlockYAt((int) defensiveSpawn.getX(), (int) defensiveSpawn.getZ());
-        defensiveSpawn.setY(defGroundY + 1.0);
-
+        // ===== TELEPORT PLAYERS IMMEDIATELY =====
         offensivePlayer.teleport(offensiveSpawn);
         defensivePlayer.teleport(defensiveSpawn);
 
+        // FREEZE PLAYERS for 2 seconds
+        offensivePlayer.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 40, 5, false, false));
+        defensivePlayer.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 40, 5, false, false));
+
         this.sendTitle(Component.text("RESET").color(Colour.partix()).decorate(TextDecoration.BOLD));
 
-        this.needsPositionReset = true;
-        this.resetStartTime = System.currentTimeMillis();
-        this.offensivePlayer = offensivePlayer.getUniqueId();
-        this.defensivePlayer = defensivePlayer.getUniqueId();
+        // ===== MAKE FINAL COPY FOR LAMBDA =====
+        final Player finalOffensivePlayer = offensivePlayer;
+
+        // Spawn ball in offensive player's hand AFTER 2 seconds
+        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+            if (!finalOffensivePlayer.isOnline()) {
+                return;
+            }
+            Location ballSpawnLoc = finalOffensivePlayer.getEyeLocation().clone();
+            Ball newBall = this.setBall(BallFactory.create(ballSpawnLoc, BallType.BASKETBALL, this));
+            newBall.setStealDelay(0);
+            newBall.setVelocity(0, 0, 0);
+            
+            // Initialize teammate hotkeys for new ball (even though 1v1, keeps code consistent)
+            if (newBall instanceof Basketball basketball) {
+                basketball.initializeAllTeammateHotkeys(this);
+            }
+
+            this.sendTitle(Component.text("PLAY!").color(Colour.allow()).decorate(TextDecoration.BOLD));
+            Bukkit.getLogger().info("✓ 1V1 RESET: Ball spawned in " + finalOffensivePlayer.getName() + "'s hand");
+        }, 40L);
+
+        Bukkit.getLogger().info("✓ 1V1 RESET: Offense=" + offensivePlayer.getName() + ", Defense=" + defensivePlayer.getName());
     }
 
     private void handleHalfCourt1v1Reset() {
@@ -333,6 +630,11 @@ public class BasketballGame
         Ball newBall = this.setBall(BallFactory.create(ballSpawnLoc, BallType.BASKETBALL, this));
         newBall.setStealDelay(0);
         newBall.setVelocity(0, 0, 0);
+        
+        // Initialize teammate hotkeys for new ball (even though 1v1, keeps code consistent)
+        if (newBall instanceof Basketball basketball) {
+            basketball.initializeAllTeammateHotkeys(this);
+        }
 
         this.sendTitle(Component.text("PLAY!").color(Colour.allow()).decorate(TextDecoration.BOLD));
 
@@ -362,55 +664,193 @@ public class BasketballGame
     }
 
     public void callTimeout(final GoalGame.Team callingTeam) {
-        int remaining;
+        // Validation checks
         if (this.getState() != GoalGame.State.REGULATION) {
             return;
         }
         if (this.settings.compType == CompType.RANKED) {
             return;
         }
-        if (this.courtLength == 26.0) {
-            return;
-        }
-        int n = remaining = callingTeam == GoalGame.Team.HOME ? this.homeTimeouts : this.awayTimeouts;
+
+        // Check remaining timeouts
+        int remaining = callingTeam == GoalGame.Team.HOME ? this.homeTimeouts : this.awayTimeouts;
         if (remaining <= 0) {
             return;
         }
+
+        // Decrement timeout count
         if (callingTeam == GoalGame.Team.HOME) {
             --this.homeTimeouts;
         } else {
             --this.awayTimeouts;
         }
+
+        // Set game to stoppage (music will resume via setState override)
         this.setState(GoalGame.State.STOPPAGE);
+
+        // Remove balls
         this.removeBalls();
+
+        // Broadcast timeout message
         this.sendMessage(Component.text(callingTeam.name() + " called a timeout!").color(Colour.partix()));
+
+        // Update display
         this.updateDisplay();
+
+        // Create timeout boss bar
         this.timeoutBar = Bukkit.createBossBar("Timeout: 60s", BarColor.WHITE, BarStyle.SOLID);
-        this.getPlayers().forEach(arg_0 -> this.timeoutBar.addPlayer(arg_0));
+        this.getPlayers().forEach(p -> this.timeoutBar.addPlayer(p));
+
+        // Set timeout duration
         this.timeoutSecs = 60;
+
+        // Cancel any existing timeout task
         if (this.timeoutTask != null) {
             this.timeoutTask.cancel();
             this.timeoutTask = null;
         }
-        this.timeoutTask = new BukkitRunnable() {
 
+        // Start timeout countdown task
+        this.timeoutTask = new BukkitRunnable() {
+            @Override
             public void run() {
                 --BasketballGame.this.timeoutSecs;
                 BasketballGame.this.timeoutBar.setProgress((double) BasketballGame.this.timeoutSecs / 60.0);
                 BasketballGame.this.timeoutBar.setTitle("Timeout: " + BasketballGame.this.timeoutSecs + "s");
+
                 if (BasketballGame.this.timeoutSecs == 10) {
-                    List<Player> teamPlayers = callingTeam == GoalGame.Team.HOME ? BasketballGame.this.getHomePlayers() : BasketballGame.this.getAwayPlayers();
-                    teamPlayers.forEach(p -> p.sendMessage(Component.text("10 seconds remaining: get ready to inbound!").color(Colour.partix())));
+                    List<Player> teamPlayers = callingTeam == GoalGame.Team.HOME ?
+                            BasketballGame.this.getHomePlayers() :
+                            BasketballGame.this.getAwayPlayers();
+                    teamPlayers.forEach(p -> p.sendMessage(
+                            Component.text("10 seconds remaining: get ready to inbound!")
+                                    .color(Colour.partix())
+                    ));
                 }
+
                 if (BasketballGame.this.timeoutSecs <= 0) {
                     BasketballGame.this.timeoutBar.removeAll();
                     BasketballGame.this.timeoutTask = null;
                     this.cancel();
-                    BasketballGame.this.endTimeout(callingTeam);
+
+                    // Start inbound sequence for the team that called timeout
+                    BasketballGame.this.endTimeoutInbound(callingTeam);
                 }
             }
         }.runTaskTimer(Partix.getInstance(), 20L, 20L);
-        this.getPlayers().stream().filter(p -> p.getInventory().contains(Material.POLISHED_BLACKSTONE_BUTTON)).forEach(p -> p.getInventory().remove(Material.POLISHED_BLACKSTONE_BUTTON));
+
+        // Remove timeout buttons from all players
+        this.getPlayers().stream()
+                .filter(p -> p.getInventory().contains(Material.POLISHED_BLACKSTONE_BUTTON))
+                .forEach(p -> p.getInventory().remove(Material.POLISHED_BLACKSTONE_BUTTON));
+    }
+
+    private void endTimeoutInbound(GoalGame.Team inboundingTeam) {
+        // Determine sideline inbound location (along the length of the court)
+        BoundingBox arenaBox = this.getArenaBox();
+        Location sidelineSpot = this.getCenter().clone();
+
+        // Place ball at SIDELINE (side of court along X-axis)
+        // Use the minX or maxX side depending on team
+        if (inboundingTeam == Team.HOME) {
+            sidelineSpot.setX(arenaBox.getMinX() - 0.5); // Home team inbounds from one sideline
+        } else {
+            sidelineSpot.setX(arenaBox.getMaxX() + 0.5); // Away team inbounds from other sideline
+        }
+        sidelineSpot.setZ(this.getCenter().getZ()); // Center of court length-wise
+        sidelineSpot.setY(this.getCenter().getY() + 1.2); // Proper height
+
+        // Set up out of bounds state for inbound
+        this.setState(State.OUT_OF_BOUNDS_THROW_WAIT);
+        this.outOfBoundsLostTeam = inboundingTeam;
+        this.outOfBoundsSide = true; // Sideline inbound
+        this.inboundSpot = sidelineSpot.clone();
+        this.inboundingTeam = inboundingTeam;
+        this.inboundingActive = true;
+        this.inboundTouchedByInbounder = false;
+        this.inbounderHasReleased = false;
+        this.inbounder = null;
+        this.inboundStartTime = System.currentTimeMillis(); // Track when inbound started
+
+        // Activate press prevention as soon as inbound starts
+        this.pressPrevention = true;
+        this.restrictedTeam = (inboundingTeam == Team.HOME) ? Team.AWAY : Team.HOME;
+        this.pressPreventionStartTime = System.currentTimeMillis();
+
+        this.setOutOfBoundsImmunity(true);
+        System.out.println("Timeout inbound - OOB immunity activated");
+
+        // Spawn ball at sideline
+        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+            Ball newBall = this.setBall(BallFactory.create(sidelineSpot, BallType.BASKETBALL, this));
+            newBall.setStealDelay(0); // ✅ 5 SECOND PROTECTION (100 ticks = 5 seconds)
+            
+            // Initialize teammate hotkeys for new ball
+            if (newBall instanceof Basketball basketball) {
+                basketball.initializeAllTeammateHotkeys(this);
+            }
+        }, 10L);
+
+        // Send inbound message
+        this.sendTitle(Component.text("Inbound: " + inboundingTeam.name() + " Ball")
+                .style(Style.style(Colour.partix(), TextDecoration.BOLD)));
+
+        // Reset shot clock
+        this.resetShotClock();
+    }
+
+    public void handleTravelTurnover(Team inboundingTeam) {
+        this.removeBalls();
+        this.sendMessage(Component.text("TRAVEL - Turnover!").color(Colour.deny()));
+
+        // Set up sideline inbound
+        BoundingBox arenaBox = this.getArenaBox();
+        Location sidelineSpot = this.getCenter().clone();
+
+        // Place ball at sideline based on which team is inbounding
+        if (inboundingTeam == Team.HOME) {
+            sidelineSpot.setX(arenaBox.getMinX() - 0.5);
+        } else {
+            sidelineSpot.setX(arenaBox.getMaxX() + 0.5);
+        }
+        sidelineSpot.setZ(this.getCenter().getZ());
+        sidelineSpot.setY(this.getCenter().getY() + 1.2);
+
+        this.setState(State.OUT_OF_BOUNDS_THROW_WAIT);
+        this.outOfBoundsLostTeam = inboundingTeam;
+        this.outOfBoundsSide = true;
+        this.inboundSpot = sidelineSpot.clone();
+        this.inboundingTeam = inboundingTeam;
+        this.inboundingActive = true;
+        this.inboundTouchedByInbounder = false;
+        this.inbounderHasReleased = false;
+        this.inbounder = null;
+
+        // Activate press prevention as soon as inbound starts
+        this.pressPrevention = true;
+        this.restrictedTeam = (inboundingTeam == Team.HOME) ? Team.AWAY : Team.HOME;
+        this.pressPreventionStartTime = System.currentTimeMillis();
+
+        this.setOutOfBoundsImmunity(true);
+
+        // Spawn ball at sideline
+        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+            Ball newBall = this.setBall(BallFactory.create(sidelineSpot, BallType.BASKETBALL, this));
+            newBall.setStealDelay(0);
+            
+            // Initialize teammate hotkeys for new ball
+            if (newBall instanceof Basketball basketball) {
+                basketball.initializeAllTeammateHotkeys(this);
+            }
+
+            // Remove immunity after 7 seconds
+            Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                this.setOutOfBoundsImmunity(false);
+                System.out.println("DEBUG: Travel inbound - OOB immunity removed after 7s");
+            }, 140L);
+        }, 10L);
+
+        this.resetShotClock();
     }
 
     public void skipTimeoutToTen() {
@@ -494,9 +934,60 @@ public class BasketballGame
 
     public void onInboundPass() {
         this.inboundPassTime = System.currentTimeMillis();
+
+        System.out.println("Inbound pass detected - starting 1 second immunity countdown");
+
+        // CRITICAL FIX: Clear press prevention AND inbound flags IMMEDIATELY on pass
+        this.pressPrevention = false;
+        this.restrictedTeam = null;
+        this.pressPreventionStartTime = 0L;
+        
+        // CRITICAL: Also clear inboundingActive and inbounder IMMEDIATELY to prevent re-activation
+        this.inboundingActive = false;
+        this.inbounder = null;
+        this.inboundTouchedByInbounder = false;
+        this.inbounderHasReleased = false;
+        this.inboundStartTime = 0L; // Clear inbound start time
+        
+        // CRITICAL: Unfreeze the clocks immediately when inbound pass happens
+        this.shotClockFrozenForInbound = false;
+        this.gameClockFrozenForInbound = false;
+        
+        System.out.println("✓ Press prevention AND inbound flags cleared IMMEDIATELY on inbound pass");
+        System.out.println("✓ Shot clock and game clock unfrozen");
+
+        // Schedule immunity removal after 1 second
+        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+            this.setOutOfBoundsImmunity(false);
+            System.out.println("OOB immunity removed - 1 second after inbound pass");
+        }, 20L); // 1 second
+
+        // Clean up remaining inbound state after 1 second
+        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+            this.inboundPassTime = 0L;
+
+            if (this.inboundBarrierTask != null) {
+                this.inboundBarrierTask.cancel();
+                this.inboundBarrierTask = null;
+            }
+            if (this.inboundTimer != null) {
+                this.inboundTimer.cancel();
+                this.inboundTimer = null;
+            }
+
+            this.setState(GoalGame.State.REGULATION);
+            this.shotClockStopped = false;
+
+            System.out.println("Inbound cleanup complete - 1 second after inbound pass");
+        }, 20L); // 1 second
     }
 
     public void inboundViolation(GoalGame.Team callingTeam) {
+        // Clear press prevention on inbound violation
+        this.pressPrevention = false;
+        this.pressPreventionStartTime = 0L; // ✅ RESET TIMER
+        this.restrictedTeam = null;
+
         final GoalGame.Team next = callingTeam == GoalGame.Team.HOME ? GoalGame.Team.AWAY : GoalGame.Team.HOME;
         String title = "§c§lInbound Violation!";
         String subtitle = "§fNext: " + next.name();
@@ -508,13 +999,12 @@ public class BasketballGame
         this.setState(GoalGame.State.STOPPAGE);
         this.cancelInboundSequence();
 
-        // NEW: Set immunity BEFORE spawning the ball
+        // Set immunity BEFORE spawning the ball
         this.setOutOfBoundsImmunity(true);
 
         new BukkitRunnable() {
-
             public void run() {
-                // Spawn the ball FIRST with immunity active
+                // Spawn the ball with immunity active
                 Location inboundSpot = BasketballGame.this.getCenter().clone();
                 inboundSpot.setY(inboundSpot.getY() + 1.2);
 
@@ -523,14 +1013,21 @@ public class BasketballGame
                 );
                 newBall.setStealDelay(0);
 
+                BasketballGame.this.inboundingActive = true;
+                BasketballGame.this.inboundTouchedByInbounder = false;
+                BasketballGame.this.inbounderHasReleased = false;
+                BasketballGame.this.inbounder = null;
 
-                // THEN call endTimeout which will set up the proper inbound sequence
+                // Activate press prevention as soon as inbound starts
+                Team inboundingTeam = BasketballGame.this.inboundingTeam;
+                if (inboundingTeam != null) {
+                    BasketballGame.this.pressPrevention = true;
+                    BasketballGame.this.restrictedTeam = (inboundingTeam == Team.HOME) ? Team.AWAY : Team.HOME;
+                    BasketballGame.this.pressPreventionStartTime = System.currentTimeMillis();
+                }
+
+                // Call endTimeout which will set up the proper inbound sequence
                 BasketballGame.this.endTimeout(next);
-
-                // Remove immunity after a short delay to allow normal play
-                Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
-                    BasketballGame.this.setOutOfBoundsImmunity(false);
-                }, 10L);
             }
         }.runTaskLater(Partix.getInstance(), 20L);
     }
@@ -549,6 +1046,13 @@ public class BasketballGame
         this.inboundTouchedByInbounder = false;
         this.inbounderHasReleased = false;
         this.inboundPassTime = 0L;
+        this.inboundStartTime = 0L;
+
+        // Clear press prevention when play resumes
+        this.pressPrevention = false;
+        this.pressPreventionStartTime = 0L; // ✅ RESET TIMER
+        this.restrictedTeam = null;
+        System.out.println("Press prevention cleared - Resume play");
 
         if (this.inboundBarrierTask != null) {
             this.inboundBarrierTask.cancel();
@@ -562,6 +1066,42 @@ public class BasketballGame
 
         this.setState(GoalGame.State.REGULATION);
         this.shotClockStopped = false;
+    }
+
+    private void updateMinutesPlayed() {
+        // Only track during active gameplay
+        if (!this.getState().equals(State.REGULATION) && !this.getState().equals(State.OVERTIME)) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+
+        // Update minutes played for all players currently on court
+        List<Player> allPlayers = new ArrayList<>();
+        allPlayers.addAll(this.getHomePlayers());
+        allPlayers.addAll(this.getAwayPlayers());
+
+        for (Player player : allPlayers) {
+            UUID playerId = player.getUniqueId();
+            
+            // Initialize if first time seeing this player during active game
+            if (!playerCourtTime.containsKey(playerId)) {
+                playerCourtTime.put(playerId, now);
+            } else {
+                // Calculate time since last update
+                long lastUpdate = playerCourtTime.get(playerId);
+                long elapsed = now - lastUpdate;
+                
+                // Add to player's minutes played
+                PlayerStats stats = this.statsManager.getPlayerStats(playerId);
+                if (stats != null) {
+                    stats.addMinutesPlayed(elapsed);
+                }
+                
+                // Update last update time
+                playerCourtTime.put(playerId, now);
+            }
+        }
     }
 
     private void updatePossessionTime() {
@@ -633,7 +1173,42 @@ public class BasketballGame
         Team violatingTeam = this.lastPossessionTeam;
         Team inboundingTeam = (violatingTeam == Team.HOME) ? Team.AWAY : Team.HOME;
 
-        // Set state and start inbound sequence on SIDELINE
+        // ===== SPECIAL HANDLING FOR 1V1 GAMES =====
+        if (this.isHalfCourt1v1) {
+            System.out.println("1v1 shot clock violation - resetting with turnover");
+
+            // Find which player had the ball (violating player)
+            Player violatingPlayer = null;
+            Player otherPlayer = null;
+
+            List<Player> allPlayers = new ArrayList<>();
+            allPlayers.addAll(this.getHomePlayers());
+            allPlayers.addAll(this.getAwayPlayers());
+
+            if (allPlayers.size() == 2) {
+                // Determine who had possession
+                if (violatingTeam == Team.HOME) {
+                    violatingPlayer = this.getHomePlayers().get(0);
+                    otherPlayer = this.getAwayPlayers().get(0);
+                } else {
+                    violatingPlayer = this.getAwayPlayers().get(0);
+                    otherPlayer = this.getHomePlayers().get(0);
+                }
+
+                System.out.println("Shot clock violation: " + violatingPlayer.getName() + " → Ball to " + otherPlayer.getName());
+
+                // Reset positions with OTHER player getting the ball
+                this.resetHalfCourt1v1PositionsWithOffense(otherPlayer);
+
+                // Reset shot clock
+                this.resetShotClockTo12();
+                this.lastPossessionTeam = null;
+
+                return; // EXIT - Don't run inbound logic for 1v1
+            }
+        }
+
+        // ===== NORMAL GAME INBOUND LOGIC (2V2, 3V3, ETC) =====
         this.setState(State.OUT_OF_BOUNDS_THROW_WAIT);
         this.outOfBoundsLostTeam = inboundingTeam;
 
@@ -642,26 +1217,47 @@ public class BasketballGame
 
         // Determine which sideline based on court orientation
         BoundingBox arenaBox = this.getArenaBox();
-        double minZ = arenaBox.getMinZ();
-        double maxZ = arenaBox.getMaxZ();
-        double centerZ = this.getCenter().getZ();
 
-        // Choose the sideline closest to center - place ball just outside boundary
-        // We'll pick the lower Z sideline (minZ side) by default
-        sidelineSpot.setZ(minZ - 0.5); // Place ball OUTSIDE the boundary (0.5 blocks past minZ)
+        // Place ball on SIDELINE (X-axis side, not Z-axis baseline)
+        sidelineSpot.setX(arenaBox.getMinX() - 0.5); // Place ball on sideline
+        sidelineSpot.setZ(this.getCenter().getZ()); // Center along court length
         sidelineSpot.setY(this.getCenter().getY() + 1.2);
 
         this.outOfBoundsSide = true;
         this.inboundSpot = sidelineSpot.clone();
         this.inboundingTeam = inboundingTeam;
+        this.inboundingActive = true;
+        this.inboundTouchedByInbounder = false;
+        this.inbounderHasReleased = false;
+        this.inbounder = null;
+
+        // Activate press prevention as soon as inbound starts
+        this.pressPrevention = true;
+        this.restrictedTeam = (inboundingTeam == Team.HOME) ? Team.AWAY : Team.HOME;
+        this.pressPreventionStartTime = System.currentTimeMillis();
+
+        // Set immunity BEFORE spawning ball
+        this.setOutOfBoundsImmunity(true);
+        System.out.println("DEBUG: Shot clock violation - OOB immunity activated");
 
         // Spawn ball at sideline after delay
         Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
             Ball newBall = this.setBall(BallFactory.create(sidelineSpot, BallType.BASKETBALL, this));
             newBall.setStealDelay(0);
+            
+            // Initialize teammate hotkeys for new ball
+            if (newBall instanceof Basketball basketball) {
+                basketball.initializeAllTeammateHotkeys(this);
+            }
+
+            // Remove immunity after 7 seconds
+            Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                this.setOutOfBoundsImmunity(false);
+                System.out.println("DEBUG: Shot clock violation - OOB immunity removed after 7 seconds");
+            }, 140L);
         }, 30L);
 
-// NEW: Only show OOB message if not immediately after scoring
+        // Only show OOB message if not immediately after scoring
         if (!this.justScored) {
             sendTitle(Component.text("Out of Bounds: " +
                     (this.inboundingTeam == Team.HOME ? "Home Ball" : "Away Ball")).style(
@@ -679,6 +1275,21 @@ public class BasketballGame
         this.setState(GoalGame.State.STOPPAGE);
         this.removeBalls();
         this.startCountdown(GoalGame.State.FACEOFF, 10);
+    }
+    
+    /**
+     * Override setState to manage music based on game state changes.
+     * Music pauses during REGULATION/OVERTIME and resumes during other states (STOPPAGE, PREGAME, etc.)
+     */
+    public void setState(GoalGame.State newState) {
+        GoalGame.State oldState = this.getState();
+        this.state = newState;
+        
+        // Update music when transitioning between states
+        if (oldState != newState) {
+            // Update music for all players in the game
+            Partix.getInstance().getLocationMusicManager().updateGameMusic(this);
+        }
     }
 
     private void updateActionBarShotClock() {
@@ -724,39 +1335,31 @@ public class BasketballGame
             this.handleHalfCourt1v1Reset();
         }
 
-        // INBOUND LOGIC (existing code)
-        if (this.inboundingActive) {
-            Ball ball = this.getBall();
-            if (ball == null) {
-                return;
-            }
-            Player ballHolder = ball.getCurrentDamager();
-            if (!this.inboundTouchedByInbounder) {
-                if (ballHolder != null && ballHolder.equals(this.inbounder)) {
-                    this.inboundTouchedByInbounder = true;
-                }
-                return;
-            }
-            if (ballHolder == null) {
-                return;
-            }
-            if (ballHolder != null && !ballHolder.equals(this.inbounder)) {
-                GoalGame.Team inbounderTeam = this.inboundingTeam;
-                GoalGame.Team catcherTeam = this.getTeamOf(ballHolder);
-                if (inbounderTeam != null && catcherTeam != null && inbounderTeam.equals(catcherTeam)) {
-                    this.resumePlay();
-                    if (this.inboundTimer != null) {
-                        this.inboundTimer.cancel();
-                        this.inboundTimer = null;
-                    }
-                    return;
-                }
-            }
-        }
 
         this.updateShotClock();
         this.updateActionBarShotClock();
         this.updatePossessionTime();
+        this.updateMinutesPlayed();
+
+        // ADDED: Check for quarter-end buzzer
+        this.checkQuarterEndBuzzer();
+
+        // ADDED: Check for press prevention
+        this.checkPressPreventionWithLateGameException();
+        
+        // ADDED: Auto-clear stale inbound states after 5 seconds (safety timeout)
+        if (this.inboundingActive && this.inboundStartTime > 0) {
+            long elapsed = System.currentTimeMillis() - this.inboundStartTime;
+            if (elapsed > INBOUND_TIMEOUT) {
+                System.out.println("⚠️ SAFETY: Auto-clearing stale inbound state after 5 seconds");
+                this.inboundingActive = false;
+                this.inbounder = null;
+                this.inboundTouchedByInbounder = false;
+                this.inbounderHasReleased = false;
+                this.inboundStartTime = 0L;
+                this.inboundPassTime = 0L;
+            }
+        }
     }
     private void pregameGoalDetection() {
     }
@@ -898,22 +1501,54 @@ public class BasketballGame
     }
     private BoundingBox getJumpBox(Location area) {
         return new BoundingBox(
-                area.x() - 5, area.y() - 20, area.z() + 5,
-                area.x() + 5, area.y() + 20, area.z() - 5
+                area.x() - 8, area.y() - 20, area.z() + 5,
+                area.x() + 8, area.y() + 20, area.z() - 5
         );
     }
 
     private void updateShotClock() {
-        if (!this.shotClockEnabled || this.getState().equals(State.STOPPAGE) || this.getState().equals(State.OUT_OF_BOUNDS_THROW) || this.getState().equals(State.OUT_OF_BOUNDS_THROW_WAIT)) {
+        // CRITICAL FIX: Only run shot clock during REGULATION or OVERTIME
+        if (!this.getState().equals(State.REGULATION) && !this.getState().equals(State.OVERTIME)) {
+            return; // Exit early - don't run shot clock logic at all
+        }
+
+        // Check if shot clock is disabled, stopped, or frozen
+        if (!this.shotClockEnabled) {
+            System.out.println("DEBUG: Shot clock not running - shotClockEnabled = false");
+            return;
+        }
+        
+        if (this.shotClockStopped) {
+            System.out.println("DEBUG: Shot clock not running - shotClockStopped = true");
+            return;
+        }
+        
+        if (this.shotClockFrozenForInbound) {
+            System.out.println("DEBUG: Shot clock not running - shotClockFrozenForInbound = true");
             return;
         }
 
-        int gameTimeLeft = this.getTimeTicks();
-        if (this.shotClockTicks > gameTimeLeft) {
+        // Don't run during stoppage states
+        if (this.getState().equals(State.STOPPAGE) ||
+                this.getState().equals(State.OUT_OF_BOUNDS_THROW) ||
+                this.getState().equals(State.OUT_OF_BOUNDS_THROW_WAIT)) {
             return;
         }
+
+        // FIXED: 1v1 games have independent shot clocks
+        if (!this.isHalfCourt1v1 && !this.isSingleHoopMode) {
+            int gameTimeLeft = this.getTimeTicks();
+            if (this.shotClockTicks > gameTimeLeft) {
+                return;  // Only for regular games
+            }
+        }
+
         Player possessor = this.getBall() != null ? this.getBall().getCurrentDamager() : null;
+        
+        // FIXED: Shot clock should run when ball is loose IF we know who had possession last
+        // Only stop if both possessor is null AND we never established possession
         if (possessor == null && this.lastPossessionTeam == null) {
+            System.out.println("DEBUG: Shot clock not running - no possessor and no lastPossessionTeam");
             return;
         }
 
@@ -930,11 +1565,15 @@ public class BasketballGame
             this.shotAttemptTeam = null;
             this.buzzerPlayed = false;
         }
+
         this.lastPossessionTeam = currentTeam;
+
         if (this.shotClockTicks > 0) {
             --this.shotClockTicks;
             this.buzzerPlayed = false;
             double secondsRemaining = (double) this.shotClockTicks / 20.0;
+
+            // Only play tick sounds during regulation/overtime
             if (secondsRemaining <= 5.0 && this.shotClockTicks % 20 == 0) {
                 for (Player p : this.getPlayers()) {
                     p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, SoundCategory.MASTER, 1.0f, 1.0f);
@@ -942,12 +1581,16 @@ public class BasketballGame
             }
         } else {
             this.shotClockTicks = 0;
-            if (!this.buzzerPlayed) {
-                for (Player p : this.getPlayers()) {
-                    p.playSound(p.getLocation(), "shotclockbuzzer", SoundCategory.MASTER, 1.0f, 1.0f);
-                }
-                this.buzzerPlayed = true;
-            }
+
+            // CRITICAL FIX: Only play buzzer if in REGULATION or OVERTIME
+//            if (!this.buzzerPlayed &&
+//                    (this.getState().equals(State.REGULATION) || this.getState().equals(State.OVERTIME))) {
+//                for (Player p : this.getPlayers()) {
+//                    p.playSound(p.getLocation(), "shotclockbuzzer", SoundCategory.MASTER, 1.0f, 1.0f);
+ //               }
+ //               this.buzzerPlayed = true;
+  //          }
+
             if (this.getBall() != null) {
                 double threshold;
                 double ballY = this.getBall().getLocation().getY();
@@ -960,22 +1603,62 @@ public class BasketballGame
         }
     }
 
+    private void checkQuarterEndBuzzer() {
+        // ADDED: Skip quarter buzzer for 1v1 games
+        if (this.isHalfCourt1v1 || this.isSingleHoopMode) {
+            return;
+        }
+
+        // Only check if not in stoppage and game clock is running
+        if (this.getState().equals(State.STOPPAGE) || this.getState().equals(State.FINAL) ||
+                this.getState().equals(State.PREGAME) || this.getState().equals(State.FACEOFF)) {
+            return;
+        }
+
+        // Check if game time (timeTicks) has hit zero
+        if (this.getTimeTicks() <= 0 && !this.quarterBuzzerPlayed) {
+            this.quarterBuzzerPlayed = true;
+
+            // Play buzzer sound to ALL players at their location
+ //           for (Player p : this.getPlayers()) {
+ //               p.playSound(p.getLocation(), "shotclockbuzzer", SoundCategory.MASTER, 1.0f, 1.0f);
+  //          }
+
+            // Optional: Send message to all players
+  //          this.sendMessage(Component.text("QUARTER BUZZER!").color(Colour.partix()).decorate(TextDecoration.BOLD));
+
+  //          System.out.println("Quarter-end buzzer played!");
+        }
+    }
+
     @Override
     public void setPregame() {
         World world = this.getCenter().getWorld();
 
         // ALWAYS create balls at home spawn
-        BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, -3.0), this.getBallType(), this);
-        BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, -1.5), this.getBallType(), this);
-        BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, 1.5), this.getBallType(), this);
-        BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, 3.0), this.getBallType(), this);
+        Ball ball1 = BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, -3.0), this.getBallType(), this);
+        Ball ball2 = BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, -1.5), this.getBallType(), this);
+        Ball ball3 = BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, 1.5), this.getBallType(), this);
+        Ball ball4 = BallFactory.create(this.getHomeSpawn().clone().add(0.0, 0.0, 3.0), this.getBallType(), this);
+        
+        // Initialize hotkeys for pregame balls
+        if (ball1 instanceof Basketball) ((Basketball) ball1).initializeAllTeammateHotkeys(this);
+        if (ball2 instanceof Basketball) ((Basketball) ball2).initializeAllTeammateHotkeys(this);
+        if (ball3 instanceof Basketball) ((Basketball) ball3).initializeAllTeammateHotkeys(this);
+        if (ball4 instanceof Basketball) ((Basketball) ball4).initializeAllTeammateHotkeys(this);
 
         // For 1v1: ONLY create balls at home spawn, not away spawn
         if (!this.isSingleHoopMode) {
-            BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, -3.0), this.getBallType(), this);
-            BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, -1.5), this.getBallType(), this);
-            BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, 1.5), this.getBallType(), this);
-            BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, 3.0), this.getBallType(), this);
+            Ball ball5 = BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, -3.0), this.getBallType(), this);
+            Ball ball6 = BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, -1.5), this.getBallType(), this);
+            Ball ball7 = BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, 1.5), this.getBallType(), this);
+            Ball ball8 = BallFactory.create(this.getAwaySpawn().clone().add(0.0, 0.0, 3.0), this.getBallType(), this);
+            
+            // Initialize hotkeys for away balls
+            if (ball5 instanceof Basketball) ((Basketball) ball5).initializeAllTeammateHotkeys(this);
+            if (ball6 instanceof Basketball) ((Basketball) ball6).initializeAllTeammateHotkeys(this);
+            if (ball7 instanceof Basketball) ((Basketball) ball7).initializeAllTeammateHotkeys(this);
+            if (ball8 instanceof Basketball) ((Basketball) ball8).initializeAllTeammateHotkeys(this);
         }
 
         // Always clear home net
@@ -983,8 +1666,7 @@ public class BasketballGame
         h.getLocation().clone().getBlock().setType(Material.AIR);
         h.getLocation().clone().subtract(0.0, 1.0, 0.0).getBlock().setType(Material.AIR);
 
-        // For 1v1: Don't clear away net (it's not used)
-        // For other modes: Clear away net normally
+        // For 1v1: Don't touch away net (it never spawns)
         if (!this.isSingleHoopMode) {
             Block a = this.getAwayNet().clone().getCenter().toLocation(world).getBlock();
             a.getLocation().clone().getBlock().setType(Material.AIR);
@@ -1014,12 +1696,14 @@ public class BasketballGame
         this.removeBalls();
         Location h = this.getHomeNet().clone().getCenter().toLocation(world);
         h.getBlock().setType(Material.AIR);
-        h.subtract(0.0, 1.0, 0.0).getBlock().setType(Material.BARRIER);
-        Location a = this.getAwayNet().clone().getCenter().toLocation(world);
-        a.getBlock().setType(Material.AIR);
-        a.subtract(0.0, 1.0, 0.0).getBlock().setType(Material.BARRIER);
 
-        // NEW: Cancel pregame task when leaving pregame
+        // For 1v1: Don't spawn away net at all
+        if (!this.isSingleHoopMode) {
+            Location a = this.getAwayNet().clone().getCenter().toLocation(world);
+            a.getBlock().setType(Material.AIR);
+        }
+
+        // Cancel pregame task when leaving pregame
         if (pregameTask != null) {
             pregameTask.cancel();
             pregameTask = null;
@@ -1031,6 +1715,11 @@ public class BasketballGame
         Location spawn = this.getCenter().add(0.0, 1.5 + Math.random() / 1.5, 0.0);
         Ball ball = this.setBall(BallFactory.create(spawn, BallType.BASKETBALL, this));
         ball.setVelocity(0.0, 0.1 + Math.random() / 3.0, new Random().nextBoolean() ? Math.max(0.05 + (0.05 + Math.random()) / 25.0, 0.05) / 3.0 : Math.min(-0.05 + (-0.5 - Math.random()) / 25.0, -0.05) / 3.0);
+        
+        // Initialize teammate hotkeys at game start (jump ball)
+        if (ball instanceof Basketball basketball) {
+            basketball.initializeAllTeammateHotkeys(this);
+        }
     }
 
     @Override
@@ -1043,6 +1732,8 @@ public class BasketballGame
         // Only reset shot clock for timed games
         if (this.settings.winType.timed) {
             this.resetShotClock();
+            // ADDED: Reset quarter buzzer flag when new period starts
+            this.quarterBuzzerPlayed = false;
         }
 
         return true;
@@ -1072,7 +1763,7 @@ public class BasketballGame
         this.sendTitle(Component.text("The ").color(Colour.partix()).append(winner.equals(Team.HOME) ? this.home.name : this.away.name).append(Component.text(" Win!").color(Colour.bold())));
 
         if (this.settings.compType.equals(CompType.RANKED) && (this.getHomePlayers().size() >= 1 || this.getAwayPlayers().size() > 1)) {
-            if (winner.equals(Team.HOME)) {
+                if (winner.equals(Team.HOME)) {
                 // HOME TEAM WINS
                 this.getHomePlayers().forEach(uuid -> {
                     BasketballDb.add(uuid.getUniqueId(), BasketballDb.Stat.WINS, 1);
@@ -1094,6 +1785,16 @@ public class BasketballGame
                     PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_GAMES_PLAYED).thenAccept(s1Games ->
                             PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_GAMES_PLAYED, s1Games + 1)
                     );
+
+                    // Rec Stats (WINS)
+                    if (this.isRecGame) {
+                        PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.REC_WINS).thenAccept(recWins ->
+                                PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.REC_WINS, recWins + 1)
+                        );
+                        PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.REC_GAMES).thenAccept(recGames ->
+                                PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.REC_GAMES, recGames + 1)
+                        );
+                    }
 
                     // Career Stats from this game
                     PlayerStats stats = this.statsManager.getPlayerStats(uuid.getUniqueId());
@@ -1125,7 +1826,22 @@ public class BasketballGame
                         PlayerDb.add(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_THREES, stats.getThrees());
                     }
 
-                    AthleteManager.get(uuid.getUniqueId()).giveCoins(10, true);
+                    // Performance-based coin rewards
+                    int coinReward = calculateCoinReward(stats, true, this.isRecGame);
+                    AthleteManager.get(uuid.getUniqueId()).giveCoins(coinReward, true);
+                    
+                    // Award Season Pass EXP for ranked games
+                    if (this.settings.compType == CompType.RANKED && stats != null) {
+                        me.x_tias.partix.plugin.seasonpass.SeasonPassManager.awardGameExp(
+                            uuid.getUniqueId(),
+                            stats.getPoints(),
+                            stats.getAssists(),
+                            stats.getRebounds(),
+                            stats.getSteals(),
+                            stats.getBlocks(),
+                            true // winner
+                        );
+                    }
                 });
 
                 // AWAY TEAM LOSES
@@ -1153,6 +1869,16 @@ public class BasketballGame
                             PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_GAMES_PLAYED, s1Games + 1)
                     );
 
+                    // Rec Stats (LOSSES)
+                    if (this.isRecGame) {
+                        PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.REC_LOSSES).thenAccept(recLosses ->
+                                PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.REC_LOSSES, recLosses + 1)
+                        );
+                        PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.REC_GAMES).thenAccept(recGames ->
+                                PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.REC_GAMES, recGames + 1)
+                        );
+                    }
+
                     // Career Stats from this game
                     PlayerStats stats = this.statsManager.getPlayerStats(uuid.getUniqueId());
                     if (stats != null) {
@@ -1183,7 +1909,22 @@ public class BasketballGame
                         PlayerDb.add(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_THREES, stats.getThrees());
                     }
 
-                    AthleteManager.get(uuid.getUniqueId()).giveCoins(5, true);
+                    // Performance-based coin rewards
+                    int coinReward = calculateCoinReward(stats, false, this.isRecGame);
+                    AthleteManager.get(uuid.getUniqueId()).giveCoins(coinReward, true);
+                    
+                    // Award Season Pass EXP for ranked games (losers get exp too!)
+                    if (this.settings.compType == CompType.RANKED && stats != null) {
+                        me.x_tias.partix.plugin.seasonpass.SeasonPassManager.awardGameExp(
+                            uuid.getUniqueId(),
+                            stats.getPoints(),
+                            stats.getAssists(),
+                            stats.getRebounds(),
+                            stats.getSteals(),
+                            stats.getBlocks(),
+                            false // loser
+                        );
+                    }
                 });
             } else {
                 // AWAY TEAM WINS
@@ -1208,6 +1949,16 @@ public class BasketballGame
                             PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_GAMES_PLAYED, s1Games + 1)
                     );
 
+                    // Rec Stats (WINS)
+                    if (this.isRecGame) {
+                        PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.REC_WINS).thenAccept(recWins ->
+                                PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.REC_WINS, recWins + 1)
+                        );
+                        PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.REC_GAMES).thenAccept(recGames ->
+                                PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.REC_GAMES, recGames + 1)
+                        );
+                    }
+
                     // Career Stats from this game
                     PlayerStats stats = this.statsManager.getPlayerStats(uuid.getUniqueId());
                     if (stats != null) {
@@ -1238,7 +1989,22 @@ public class BasketballGame
                         PlayerDb.add(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_THREES, stats.getThrees());
                     }
 
-                    AthleteManager.get(uuid.getUniqueId()).giveCoins(10, true);
+                    // Performance-based coin rewards
+                    int coinReward = calculateCoinReward(stats, true, this.isRecGame);
+                    AthleteManager.get(uuid.getUniqueId()).giveCoins(coinReward, true);
+                    
+                    // Award Season Pass EXP for ranked games
+                    if (this.settings.compType == CompType.RANKED && stats != null) {
+                        me.x_tias.partix.plugin.seasonpass.SeasonPassManager.awardGameExp(
+                            uuid.getUniqueId(),
+                            stats.getPoints(),
+                            stats.getAssists(),
+                            stats.getRebounds(),
+                            stats.getSteals(),
+                            stats.getBlocks(),
+                            true // winner
+                        );
+                    }
                 });
 
                 // HOME TEAM LOSES
@@ -1266,6 +2032,16 @@ public class BasketballGame
                             PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_GAMES_PLAYED, s1Games + 1)
                     );
 
+                    // Rec Stats (LOSSES)
+                    if (this.isRecGame) {
+                        PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.REC_LOSSES).thenAccept(recLosses ->
+                                PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.REC_LOSSES, recLosses + 1)
+                        );
+                        PlayerDb.get(uuid.getUniqueId(), PlayerDb.Stat.REC_GAMES).thenAccept(recGames ->
+                                PlayerDb.set(uuid.getUniqueId(), PlayerDb.Stat.REC_GAMES, recGames + 1)
+                        );
+                    }
+
                     // Career Stats from this game
                     PlayerStats stats = this.statsManager.getPlayerStats(uuid.getUniqueId());
                     if (stats != null) {
@@ -1296,7 +2072,22 @@ public class BasketballGame
                         PlayerDb.add(uuid.getUniqueId(), PlayerDb.Stat.SEASON_1_THREES, stats.getThrees());
                     }
 
-                    AthleteManager.get(uuid.getUniqueId()).giveCoins(5, true);
+                    // Performance-based coin rewards
+                    int coinReward = calculateCoinReward(stats, false, this.isRecGame);
+                    AthleteManager.get(uuid.getUniqueId()).giveCoins(coinReward, true);
+                    
+                    // Award Season Pass EXP for ranked games (losers get exp too!)
+                    if (this.settings.compType == CompType.RANKED && stats != null) {
+                        me.x_tias.partix.plugin.seasonpass.SeasonPassManager.awardGameExp(
+                            uuid.getUniqueId(),
+                            stats.getPoints(),
+                            stats.getAssists(),
+                            stats.getRebounds(),
+                            stats.getSteals(),
+                            stats.getBlocks(),
+                            false // loser
+                        );
+                    }
                 });
             }
             this.points.forEach((uuid, integer) -> BasketballDb.add(uuid, BasketballDb.Stat.POINTS, integer));
@@ -1348,7 +2139,21 @@ public class BasketballGame
     public void cancelInboundSequence() {
         this.inboundingActive = false;
         this.inbounder = null;
-        this.inboundPassTime = 0L; // CLEAR THIS
+        this.inboundPassTime = 0L;
+        this.inboundTouchedByInbounder = false;
+        this.inbounderHasReleased = false;
+
+        // Clear press prevention
+        this.pressPrevention = false;
+        this.pressPreventionStartTime = 0L; // ✅ RESET TIME
+        this.restrictedTeam = null;
+        System.out.println("Press prevention cleared - Inbound cancelled");
+        
+        // Clear clock freeze flags
+        this.shotClockFrozenForInbound = false;
+        this.gameClockFrozenForInbound = false;
+        System.out.println("Clock freeze flags cleared - Inbound cancelled");
+
         if (this.inboundBarrierTask != null && !this.inboundBarrierTask.isCancelled()) {
             this.inboundBarrierTask.cancel();
             this.inboundBarrierTask = null;
@@ -1360,8 +2165,65 @@ public class BasketballGame
         this.inboundBall = null;
     }
 
+
+
     private void endGameSaveStats() {
         System.out.println("Debug: endGameSaveStats() has been triggered.");
+    }
+
+    /**
+     * Calculate coin reward based on player performance
+     * @param stats Player's game statistics
+     * @param won Whether the player won the game
+     * @param isRecGame Whether this is a REC Center game
+     * @return Coin amount to award
+     */
+    private int calculateCoinReward(PlayerStats stats, boolean won, boolean isRecGame) {
+        if (stats == null) {
+            // Fallback to old minimums if no stats
+            if (isRecGame) {
+                return won ? 50 : 10;
+            } else {
+                return won ? 10 : 0;
+            }
+        }
+        
+        // Calculate performance score
+        int performanceScore = 0;
+        performanceScore += stats.getPoints() * 2;       // 2 coins per point
+        performanceScore += stats.getAssists() * 3;      // 3 coins per assist
+        performanceScore += stats.getRebounds() * 2;     // 2 coins per rebound
+        performanceScore += stats.getSteals() * 4;       // 4 coins per steal
+        performanceScore += stats.getBlocks() * 5;       // 5 coins per block
+        performanceScore -= stats.getTurnovers() * 1;    // -1 coin per turnover
+        
+        // Apply win/loss modifiers and caps
+        int coinReward;
+        if (isRecGame) {
+            // REC Center games
+            if (won) {
+                // Winners: 50-100 coins
+                coinReward = 50 + (int)(performanceScore * 0.8);
+                coinReward = Math.max(50, Math.min(100, coinReward));
+            } else {
+                // Losers: 10-50 coins
+                coinReward = 10 + (int)(performanceScore * 0.6);
+                coinReward = Math.max(10, Math.min(50, coinReward));
+            }
+        } else {
+            // Regular ranked games
+            if (won) {
+                // Winners: 10-50 coins
+                coinReward = 10 + (int)(performanceScore * 0.6);
+                coinReward = Math.max(10, Math.min(50, coinReward));
+            } else {
+                // Losers: 0-25 coins
+                coinReward = (int)(performanceScore * 0.4);
+                coinReward = Math.max(0, Math.min(25, coinReward));
+            }
+        }
+        
+        return coinReward;
     }
 
     public void displayStats() {
@@ -1407,16 +2269,6 @@ public class BasketballGame
     @Override
     public void updateDisplay() {
         Object time;
-        if (this.isSingleHoopMode && this.settings.winType.winByTwo) {
-            time = "§fFirst to: §e21";
-        } else if (this.getState().equals(State.REGULATION) || this.getState().equals(State.OVERTIME) || this.getState().equals(State.FACEOFF)) {
-            time = this.getState().equals(State.OVERTIME) ? (this.settings.suddenDeath ? "§fTime: §e0:00" : "§fTime: §e" + this.getGameTime()) : (this.settings.winType.timed ? "§fTime: §e" + this.getGameTime() : "§fFirst to: §e" + this.settings.winType.amount);
-            if (this.getState().equals(State.FACEOFF)) {
-                time = time + " §7(" + this.getCountSeconds() + "s)";
-            }
-        } else {
-            time = this.getState().equals(State.PREGAME) ? "§bPregame" + (this.getCountSeconds() > 0 ? ": §f" + this.getCountSeconds() + "s" : "") : (this.getState().equals(State.FINAL) ? "§cGame Over" + (this.getCountSeconds() > 0 ? ": §f" + this.getCountSeconds() + "s" : "") : "§fStoppage");
-        }
         if (this.getState().equals(State.REGULATION) || this.getState().equals(State.OVERTIME) || this.getState().equals(State.FACEOFF)) {
             time = this.getState().equals(State.OVERTIME) ? (this.settings.suddenDeath ? "§fTime: §e0:00" : "§fTime: §e" + this.getGameTime()) : (this.settings.winType.timed ? "§fTime: §e" + this.getGameTime() : "§fFirst to: §e" + this.settings.winType.amount);
             if (this.getState().equals(State.FACEOFF)) {
@@ -1429,380 +2281,507 @@ public class BasketballGame
         StringBuilder homeTO = new StringBuilder("§fTimeouts §7[");
         StringBuilder awayTO = new StringBuilder("§fTimeouts §7[");
         for (int i = 0; i < 4; ++i) {
-            homeTO.append(i < this.homeTimeouts ? "§6§l⬤" : "§8◯");
-            awayTO.append(i < this.awayTimeouts ? "§6§l⬤" : "§8◯");
+            homeTO.append(i < this.homeTimeouts ? "§a§l⬤" : "§8◯");
+            awayTO.append(i < this.awayTimeouts ? "§a§l⬤" : "§8◯");
         }
         homeTO.append("§7] §0");
         awayTO.append("§7] §1");
-        Sidebar.set(this.getPlayers(), Component.text("⛹ MBA Basketball", Colour.partix(), TextDecoration.BOLD), "", "", "§6§lMatch Info", "  " + time, "  §f" + (this.settings.winType.timed ? this.getShortPeriodString() : "---"), "", "§6§lScoreboard", "  §bHome: §e" + this.homeScore + " §7(" + Text.serialize(this.home.abrv) + ")", homeTO.toString(), "  §dAway: §e" + this.awayScore + " §7(" + Text.serialize(this.away.abrv) + ")", awayTO.toString());
+        
+        // Update sidebar for each player individually to show their own teammate assignments
+        Basketball bball = null;
+        if (this.getBall() instanceof Basketball) {
+            bball = (Basketball) this.getBall();
+        }
+        
+        for (Player p : this.getPlayers()) {
+            if (bball != null) {
+                Player key2 = bball.getTeammateByHotkey(2, p);
+                Player key3 = bball.getTeammateByHotkey(3, p);
+                
+                if (key2 != null || key3 != null) {
+                    String teammateInfo = "§e§lTrack Pass";
+                    // Use simple number keys instead of keybind translation
+                    String key2Line = key2 != null ? "  §7[2] §f" + key2.getName() : "";
+                    String key3Line = key3 != null ? "  §7[3] §f" + key3.getName() : "";
+                    
+                    Sidebar.set(p, Component.text("\uF808\uF808〩"), "                     ", " ", "§b§lMatch Info", "  " + time, "  §f" + (this.settings.winType.timed ? this.getShortPeriodString() : "---"), "", "§f§lScoreboard", "  §1Home: §a" + this.homeScore + " §7(" + Text.serialize(this.home.abrv) + ")", homeTO.toString(), "  §4Away: §a" + this.awayScore + " §7(" + Text.serialize(this.away.abrv) + ")", awayTO.toString(), "", teammateInfo, key2Line, key3Line);
+                    continue;
+                }
+            }
+            
+            // No teammates or no ball - show normal sidebar
+            Sidebar.set(p, Component.text("\uF808\uF808〩"), "                     ", " ", "§b§lMatch Info", "  " + time, "  §f" + (this.settings.winType.timed ? this.getShortPeriodString() : "---"), "", "§f§lScoreboard", "  §1Home: §a" + this.homeScore + " §7(" + Text.serialize(this.home.abrv) + ")", homeTO.toString(), "  §4Away: §a" + this.awayScore + " §7(" + Text.serialize(this.away.abrv) + ")", awayTO.toString());
+        }
+        
         this.updateBossBar("§r§f§l" + Text.serialize(this.away.name) + " §7§l" + this.awayScore + " §r§e@ §7§l" + this.homeScore + " §r§f§l" + Text.serialize(this.home.name), Math.min(1.0, Math.max(0.0, (double) this.getTimeTicks() / (double) (this.settings.winType.amount * 60 * 20))));
     }
+
+// Replace the goal() method in BasketballGame.java with this fixed version:
+
+// Replace the ENTIRE goal() method in BasketballGame.java starting around line 1650
 
     @Override
     public void goal(GoalGame.Team team) {
         Ball ball = this.getBall();
         if (ball == null) return;
 
+        // ❌ REMOVED: Don't clear press prevention immediately!
+        // OLD CODE: this.pressPrevention = false; this.restrictedTeam = null;
+
         if (ball instanceof Basketball ball2) {
-            // ===== CRITICAL FIX: CHECK LAYUP SCORED FLAG FIRST =====
+            // Check if ball is in hoop
+            boolean inHomeNet = this.getHomeNet().clone().expand(0.3).contains(ball2.getLocation().toVector());
+            boolean inAwayNet = this.getAwayNet().clone().expand(0.3).contains(ball2.getLocation().toVector());
+
+            if (!inHomeNet && !inAwayNet) {
+                return;
+            }
+
             if (ball2.layupScored) {
                 return;
             }
-            // ===== END CRITICAL FIX =====
 
-            if (ball2.getVelocity().getY() < 0.01) {
-
-                if (ball2.isShouldPreventScore()) {
-                    return;
-                }
-
-                // Mark as scored IMMEDIATELY
+            if (ball2.shouldPreventScore) {
+                System.out.println("Shot prevented from scoring (bad release)");
                 ball2.layupScored = true;
+                ball2.shouldPreventScore = false;
+                this.removeBalls();
 
-                // ===== KEEP THIS: REBOUND MACHINE LOGIC (PREGAME ONLY) =====
-                if (this.settings.reboundMachineEnabled && this.getState().equals(State.PREGAME)) {
-                    Player scorer = ball2.getLastDamager();
-                    if (scorer != null && scorer.isOnline()) {
-                        UUID scorerId = scorer.getUniqueId();
+                Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                    Player shooter = ball2.getLastDamager();
+                    Team inboundTeam = Team.HOME;
 
-                        // Track made shot
-                        this.reboundMachineShotsMade.put(scorerId, this.reboundMachineShotsMade.getOrDefault(scorerId, 0) + 1);
-
-                        int shotsMade = this.reboundMachineShotsMade.get(scorerId);
-                        int shotsTaken = this.reboundMachineShotsTaken.getOrDefault(scorerId, 0);
-
-                        // Calculate shooting percentage
-                        double shootingPercentage = shotsTaken > 0 ? ((double) shotsMade / (double) shotsTaken) * 100.0 : 0.0;
-
-                        // Send personal stats to ONLY this player
-                        Component statsMessage = Component.text("Shots Taken: ", Colour.border())
-                                .append(Component.text(shotsTaken, Colour.title()))
-                                .append(Component.text(" | Shots Made: ", Colour.border()))
-                                .append(Component.text(shotsMade, Colour.allow()))
-                                .append(Component.text(" | Shot %: ", Colour.border()))
-                                .append(Component.text(String.format("%.1f%%", shootingPercentage), Colour.partix()))
-                                .append(Component.text(" (" + shotsMade + "/" + shotsTaken + ")", Colour.text()));
-
-                        scorer.sendMessage(statsMessage);
-
-                        // Determine which hoop was scored in
-                        Location hoopLocation;
-                        if (team.equals(Team.HOME)) {
-                            hoopLocation = this.getHomeNet().getCenter().toLocation(scorer.getWorld());
-                        } else {
-                            hoopLocation = this.getAwayNet().getCenter().toLocation(scorer.getWorld());
-                        }
-
-                        // Shoot ball back to scorer's current location
-                        Location targetLocation = scorer.getLocation().clone().add(0, 1.5, 0);
-                        Vector direction = targetLocation.toVector().subtract(hoopLocation.toVector()).normalize();
-
-                        // Set ball at hoop location
-                        ball2.setLocation(hoopLocation.clone().add(0, -0.5, 0));
-
-                        // Shoot ball toward player
-                        ball2.setVelocity(direction.getX() * 0.45, 0.25, direction.getZ() * 0.45);
-                    }
-
-                    // Return early (don't run normal scoring logic)
-                    return;
-                }
-                // ===== END REBOUND MACHINE LOGIC =====
-
-// ===== FOR 1V1 SINGLE HOOP - FIRST TO 21 WITH WIN BY 2 =====
-                if (this.isSingleHoopMode) {
-                    Player scorer = ball2.getLastDamager();
-                    if (scorer == null) {
-                        return;
-                    }
-
-                    UUID scorerId = scorer.getUniqueId();
-                    boolean isThree = ball2.isThreeEligible();
-
-                    // Update player stats
-                    PlayerStats stats = this.statsManager.getPlayerStats(scorerId);
-                    this.checkAssistEligibility(scorer);
-                    stats.incrementFGMade();
-                    if (isThree) {
-                        stats.increment3FGMade();
-                        stats.incrementThrees();
-                    }
-
-                    // Play green sound for 3-pointers
-                    if (isThree) {
-                        CosmeticSound greenSound;
-                        Athlete athlete = AthleteManager.get(scorerId);
-                        CosmeticSound cosmeticSound = greenSound = athlete != null ? athlete.getGreenSound() : CosmeticSound.NO_SOUND;
-                        if (greenSound != CosmeticSound.NO_SOUND && greenSound.getSoundIdentifier() != null && !greenSound.getSoundIdentifier().isEmpty()) {
-                            Bukkit.getLogger().info("[DEBUG] Playing Green Sound for player: " + scorer.getName() + ", Sound: " + greenSound.getSoundIdentifier());
-                            scorer.getWorld().playSound(scorer.getLocation(), greenSound.getSoundIdentifier(), SoundCategory.PLAYERS, 3.5f, 1.0f);
+                    if (shooter != null) {
+                        if (this.getHomePlayers().contains(shooter)) {
+                            inboundTeam = Team.AWAY;
+                        } else if (this.getAwayPlayers().contains(shooter)) {
+                            inboundTeam = Team.HOME;
                         }
                     }
 
-                    stats.addPoints(isThree ? 3 : 2);
-
-                    // Determine which team scored
-                    GoalGame.Team scorerTeam = this.getHomePlayers().contains(scorer) ? Team.HOME : Team.AWAY;
-
-                    // Update score
-                    int pointsScored = isThree ? 3 : 2;
-                    if (scorerTeam.equals(Team.HOME)) {
-                        this.homeScore += pointsScored;
+                    Location inboundSpot;
+                    if (inboundTeam == Team.HOME) {
+                        inboundSpot = this.getHomeSpawn().clone().add(0, 1.2, 6);
                     } else {
-                        this.awayScore += pointsScored;
+                        inboundSpot = this.getAwaySpawn().clone().add(0, 1.2, -6);
                     }
 
-                    // Send scoring message
-                    Component scoringMessage = Component.text(scorer.getName() + (isThree ? " - 3 POINTS!" : " - 2 POINTS!"))
-                            .color(scorerTeam.equals(Team.HOME) ? TextColor.color(0x00AAFF) : TextColor.color(0xFFAA00))
-                            .decorate(TextDecoration.BOLD);
-
-                    this.sendTitle(scoringMessage);
-
-                    // Track points for final stats
-                    this.points.put(scorerId, this.points.getOrDefault(scorerId, 0) + pointsScored);
-                    if (isThree) {
-                        this.threes.put(scorerId, this.threes.getOrDefault(scorerId, 0) + 1);
-                        if (scorer.hasPermission("rank.vip") || scorer.hasPermission("rank.pro")) {
-                            PlayerDb.add(scorerId, PlayerDb.Stat.COINS, 1);
-                        }
+                    Ball newBall = this.setBall(BallFactory.create(inboundSpot, BallType.BASKETBALL, this));
+                    newBall.setStealDelay(0);
+                    newBall.setVelocity(0, 0.05, 0.0);
+                    
+                    // Initialize teammate hotkeys for new ball
+                    if (newBall instanceof Basketball basketball) {
+                        basketball.initializeAllTeammateHotkeys(this);
                     }
 
-                    // Explosion effect
-                    AthleteManager.get(scorerId).getExplosion().mediumExplosion(ball2.getLocation());
-
-                    // ===== CHECK WIN CONDITION: FIRST TO 21 WITH WIN BY 2 =====
-                    boolean gameOver = false;
-                    Team winner = null;
-
-                    int homeScore = this.homeScore;
-                    int awayScore = this.awayScore;
-
-                    // Both must reach at least 21, and leader must be ahead by 2
-                    if (homeScore >= 21 && (homeScore - awayScore) >= 2) {
-                        gameOver = true;
-                        winner = Team.HOME;
-                    } else if (awayScore >= 21 && (awayScore - homeScore) >= 2) {
-                        gameOver = true;
-                        winner = Team.AWAY;
-                    }
-
-                    if (gameOver) {
-                        // Game is over! Call gameOver()
-                        this.gameOver(winner);
-                        this.sendTitle(Component.text("The ").color(Colour.partix()).append(
-                                winner.equals(Team.HOME) ? this.home.name : this.away.name
-                        ).append(Component.text(" Win!").color(Colour.partix())));
-                        this.removeBalls();
-                    } else {
-                        // Game continues - make-it-take-it: reset positions
-                        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
-                            this.resetHalfCourt1v1Positions();
-                        }, 30L);
-                    }
-
-                    ball2.clearPerfectShot();
-                    this.lastPossessionTeam = null;
                     this.resetShotClock();
-                    return;  // EXIT - Don't run normal logic
-                }
-// ===== END 1V1 LOGIC =====
+                }, 20L);
 
-                // ===== ORIGINAL NORMAL GAME SCORING LOGIC =====
-                int score;
-                BaseTeam t = team.equals(Team.HOME) ? this.home : this.away;
-                boolean isThree = ball2.isThreeEligible();
+                return;
+            }
+
+            ball2.layupScored = true;
+            ball2.shouldPreventScore = false;
+
+            // PREGAME REBOUND MACHINE - skip normal scoring
+            if (this.settings.reboundMachineEnabled && this.getState().equals(State.PREGAME)) {
                 Player scorer = ball2.getLastDamager();
-                if (scorer != null) {
+                if (scorer != null && scorer.isOnline()) {
                     UUID scorerId = scorer.getUniqueId();
-                    this.checkAssistEligibility(scorer);
-                    PlayerStats stats = this.statsManager.getPlayerStats(scorerId);
-                    stats.incrementFGMade();
-                    if (isThree) {
-                        stats.increment3FGMade();
-                        stats.incrementThrees();
-                    }
-                    if (isThree) {
-                        CosmeticSound greenSound;
-                        Athlete athlete = AthleteManager.get(scorerId);
-                        CosmeticSound cosmeticSound = greenSound = athlete != null ? athlete.getGreenSound() : CosmeticSound.NO_SOUND;
-                        if (greenSound != CosmeticSound.NO_SOUND && greenSound.getSoundIdentifier() != null && !greenSound.getSoundIdentifier().isEmpty()) {
-                            Bukkit.getLogger().info("[DEBUG] Playing Green Sound for player: " + scorer.getName() + ", Sound: " + greenSound.getSoundIdentifier());
-                            scorer.getWorld().playSound(scorer.getLocation(), greenSound.getSoundIdentifier(), SoundCategory.PLAYERS, 3.5f, 1.0f);
-                        } else {
-                            Bukkit.getLogger().warning("No valid Green Sound for player: " + scorer.getName());
-                        }
-                    }
-                    stats.addPoints(isThree ? 3 : 2);
-                    this.sendMessage(Component.text(scorer.getName() + "'s current stats: ").color(Colour.title()).append(Component.text("Points: ", Colour.border())).append(Component.text(stats.getPoints(), Colour.allow())).append(Component.text(", 3s: ", Colour.border())).append(Component.text(stats.getThrees(), Colour.allow())).append(Component.text(", Assists: ", Colour.border())).append(Component.text(stats.getAssists(), Colour.allow())).append(Component.text(", Rebounds: ", Colour.border())).append(Component.text(stats.getRebounds(), Colour.allow())).append(Component.text(", Steals: ", Colour.border())).append(Component.text(stats.getSteals(), Colour.allow())));
-                }
-                ball2.setReboundEligible(false);
-                if (this.settings.gameType.equals(GameType.AUTOMATIC)) {
-                    List<Player> players;
-                    List<Player> list = players = team.equals(Team.HOME) ? this.getHomePlayers() : this.getAwayPlayers();
-                    if (scorer != null && players.contains(scorer)) {
-                        this.points.put(scorer.getUniqueId(), this.points.getOrDefault(scorer.getUniqueId(), 0) + (isThree ? 3 : 2));
-                        if (isThree) {
-                            this.threes.put(scorer.getUniqueId(), this.threes.getOrDefault(scorer.getUniqueId(), 0) + 1);
-                            if (scorer.hasPermission("rank.vip") || scorer.hasPermission("rank.pro")) {
-                                PlayerDb.add(scorer.getUniqueId(), PlayerDb.Stat.COINS, 1);
-                            }
-                        }
-                    }
-                }
-                int n = score = team.equals(Team.HOME) ? this.homeScore : this.awayScore;
-                if (this.getState().equals(State.REGULATION) || !this.settings.suddenDeath || !this.settings.winType.timed && score + (isThree ? 3 : 2) >= this.settings.winType.amount) {
+                    this.reboundMachineShotsMade.put(scorerId, this.reboundMachineShotsMade.getOrDefault(scorerId, 0) + 1);
 
-                    // NEW: Generate dynamic scoring message based on shot type
-                    Component scoringMessage;
-                    if (scorer != null) {
-                        String scorerName = scorer.getName();
+                    int shotsMade = this.reboundMachineShotsMade.get(scorerId);
+                    int shotsTaken = this.reboundMachineShotsTaken.getOrDefault(scorerId, 0);
+                    double shootingPercentage = shotsTaken > 0 ? ((double) shotsMade / (double) shotsTaken) * 100.0 : 0.0;
 
-                        Location hoopLoc = team.equals(Team.HOME) ?
-                                this.getAwayNet().getCenter().toLocation(scorer.getWorld()) :
-                                this.getHomeNet().getCenter().toLocation(scorer.getWorld());
+                    Component statsMessage = Component.text("Shots Taken: ", Colour.border())
+                            .append(Component.text(shotsTaken, Colour.title()))
+                            .append(Component.text(" | Shots Made: ", Colour.border()))
+                            .append(Component.text(shotsMade, Colour.allow()))
+                            .append(Component.text(" | Shot %: ", Colour.border()))
+                            .append(Component.text(String.format("%.1f%%", shootingPercentage), Colour.partix()))
+                            .append(Component.text(" (" + shotsMade + "/" + shotsTaken + ")", Colour.text()));
 
-                        // FIXED: Use stored distance from time of shot
-                        double distance = ball2.getShotDistance();
-                        if (distance == 0.0) {
-                            // Fallback if no stored distance
-                            Location scorerLoc = scorer.getLocation();
-                            distance = scorerLoc.distance(hoopLoc);
-                        }
+                    scorer.sendMessage(statsMessage);
 
-                        // Height difference - calculate from current position (less critical)
-                        Location scorerLoc = scorer.getLocation();
-                        double heightDiff = scorerLoc.getY() - hoopLoc.getY();
-
-                        String shotType;
-
-                        if (isThree) {
-                            // Three-pointer messages
-                            if (distance > 8.0) {
-                                shotType = "FROM DOWNTOWN!";
-                            } else {
-                                shotType = "FOR 3!";
-                            }
-                        } else {
-                            // Two-pointer messages based on distance and height
-                            if (distance < 3.0 && heightDiff > 1.5) {
-                                shotType = "DUNKED THE BALL!";
-                            } else if (distance < 3.5) {
-                                shotType = "WITH THE LAYUP!";
-                            } else if (distance < 5.0) {
-                                shotType = "IN THE PAINT!";
-                            } else if (distance < 7.0) {
-                                shotType = "WITH THE MID-RANGE JUMPER!";
-                            } else {
-                                shotType = "WITH THE LONG TWO!";
-                            }
-                        }
-
-
-                        scoringMessage = Component.text(scorerName + " " + shotType)
-                                .color(team.equals(Team.HOME) ? TextColor.color(0x00AAFF) : TextColor.color(0xFFAA00))
-                                .decorate(TextDecoration.BOLD);
-
-                        AthleteManager.get(scorer.getUniqueId()).getExplosion().mediumExplosion(ball2.getLocation());
+                    Location hoopLocation;
+                    if (team.equals(Team.HOME)) {
+                        hoopLocation = this.getHomeNet().getCenter().toLocation(scorer.getWorld());
                     } else {
-                        // Fallback if no scorer identified
-                        scoringMessage = t.name.append(Component.text(isThree ? " ‣ 3 Points!" : " ‣ 2 Points").color(Colour.partix()));
+                        hoopLocation = this.getAwayNet().getCenter().toLocation(scorer.getWorld());
                     }
 
-                    this.sendTitle(scoringMessage);
-
-                    // NEW: Set flag to suppress OOB message after scoring
-                    this.justScored = true;
+                    Location underRim = hoopLocation.clone().subtract(0, 2.0, 0);
+                    ball2.remove();
 
                     Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
-                        this.justScored = false;
-                    }, 40L);
-
-                    // NEW: Get center X coordinate for halfcourt line
-                    double centerX = this.getCenter().getX();
-
-                    if (team.equals(Team.HOME)) {
-                        this.homeScore += isThree ? 3 : 2;
-
-                        // NEW: Teleport HOME players back to their spawn (defensive half)
-                        // Teleport ALL players, not just those on offensive side
-                        for (Player player : this.getHomePlayers()) {
-                            if (player != null && player.isOnline()) {
-                                Location spawnLoc = this.getHomeSpawn().clone();
-                                spawnLoc.setX(spawnLoc.getX() - 3.0); // Move them away from basket
-                                player.teleport(spawnLoc);
-                                System.out.println("DEBUG: Teleported " + player.getName() + " to home defensive position");
-                            }
+                        if (scorer.isOnline()) {
+                            Ball newBall = BallFactory.create(underRim, BallType.BASKETBALL, this);
+                            Location playerLoc = scorer.getLocation();
+                            Vector direction = playerLoc.toVector().subtract(underRim.toVector()).normalize();
+                            newBall.setVelocity(direction.getX() * 0.75, 0.15, direction.getZ() * 0.75);
+                            scorer.playSound(scorer.getLocation(), Sound.ENTITY_ARROW_HIT_PLAYER, 0.5f, 1.2f);
                         }
-
-                        // NEW: Set immunity BEFORE spawning ball out of bounds
-                        this.setOutOfBoundsImmunity(true);
-
-                        // Ball spawn for away team - MUST CLONE
-                        Location awayInboundSpot = this.getAwaySpawn().clone().add(0, 1.2, -6);
-                        ball2.setLocation(awayInboundSpot);
-                        ball2.setVelocity(0, 0.05, 0.0);
-
-                        // NEW: Remove immunity after 7 seconds (140 ticks) so inbound sequence starts properly
-                        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
-                            this.setOutOfBoundsImmunity(false);
-                            System.out.println("DEBUG: Out of bounds immunity removed after scoring");
-                        }, 140L);
-
-                    } else {
-                        this.awayScore += isThree ? 3 : 2;
-
-                        // NEW: Teleport AWAY players back to their spawn (defensive half)
-                        // Teleport ALL players, not just those on offensive side
-                        for (Player player : this.getAwayPlayers()) {
-                            if (player != null && player.isOnline()) {
-                                Location spawnLoc = this.getAwaySpawn().clone();
-                                spawnLoc.setX(spawnLoc.getX() + 3.0); // Move them away from basket
-                                player.teleport(spawnLoc);
-                                System.out.println("DEBUG: Teleported " + player.getName() + " to away defensive position");
-                            }
-                        }
-
-                        // NEW: Set immunity BEFORE spawning ball out of bounds
-                        this.setOutOfBoundsImmunity(true);
-
-                        // Ball spawn for home team - MUST CLONE
-                        Location homeInboundSpot = this.getHomeSpawn().clone().add(0, 1.2, 6);
-                        ball2.setLocation(homeInboundSpot);
-                        ball2.setVelocity(0, 0.05, 0.0);
-
-                        // NEW: Remove immunity after 7 seconds (140 ticks) so inbound sequence starts properly
-                        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
-                            this.setOutOfBoundsImmunity(false);
-                            System.out.println("DEBUG: Out of bounds immunity removed after scoring");
-                        }, 140L);
-                    }
-                } else {
-                    if (team.equals(Team.HOME)) {
-                        this.homeScore += isThree ? 3 : 2;
-
-                        if (this.isHalfCourt1v1) {
-                            Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
-                                this.resetHalfCourt1v1Positions();
-                            }, 30L);
-                        }
-                    } else {
-                        this.awayScore += isThree ? 3 : 2;
-
-                        if (this.isHalfCourt1v1) {
-                            Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
-                                this.resetHalfCourt1v1Positions();
-                            }, 30L);
-                        }
-                    }
-                    this.gameOver(team);
-                    this.sendTitle(Component.text("The ").color(Colour.partix()).append(t.name).append(Component.text(" Win!").color(Colour.partix())));
-                    this.removeBalls();
+                    }, 10L);
                 }
+                return;
+            }
+
+            // ===== 1V1 HALF-COURT LOGIC =====
+            if (this.isSingleHoopMode) {
+                if (ball2.getCurrentDamager() != null) {
+                    return;
+                }
+
+                Player scorer = ball2.getLastDamager();
+                if (scorer == null) {
+                    return;
+                }
+
+                UUID scorerId = scorer.getUniqueId();
+                boolean isThree = ball2.isThreeEligible();
+
+                PlayerStats stats = this.statsManager.getPlayerStats(scorerId);
+                this.checkAssistEligibility(scorer);
+                stats.incrementFGMade();
+                if (isThree) {
+                    stats.increment3FGMade();
+                    stats.incrementThrees();
+                }
+
+                stats.addPoints(isThree ? 3 : 2);
+
+                GoalGame.Team scorerTeam;
+                if (this.getHomePlayers().contains(scorer)) {
+                    scorerTeam = Team.HOME;
+                } else if (this.getAwayPlayers().contains(scorer)) {
+                    scorerTeam = Team.AWAY;
+                } else {
+                    scorerTeam = Team.HOME;
+                }
+
+                int pointsScored = isThree ? 3 : 2;
+
+                if (scorerTeam.equals(Team.HOME)) {
+                    this.homeScore += pointsScored;
+                } else {
+                    this.awayScore += pointsScored;
+                }
+
+                Component scoringMessage = Component.text(scorer.getName() + (isThree ? " - 3 POINTS!" : " - 2 POINTS!"))
+                        .color(scorerTeam.equals(Team.HOME) ? TextColor.color(0x00AAFF) : TextColor.color(0xFFAA00))
+                        .decorate(TextDecoration.BOLD);
+
+                this.sendTitle(scoringMessage);
+
+                this.points.put(scorerId, this.points.getOrDefault(scorerId, 0) + pointsScored);
+                if (isThree) {
+                    this.threes.put(scorerId, this.threes.getOrDefault(scorerId, 0) + 1);
+                    if (scorer.hasPermission("rank.vip") || scorer.hasPermission("rank.pro")) {
+                        PlayerDb.add(scorerId, PlayerDb.Stat.COINS, 1);
+                    }
+                }
+
+                AthleteManager.get(scorerId).getExplosion().mediumExplosion(ball2.getLocation().clone());
+                Location hoopLocation = this.getHomeNet().getCenter().toLocation(scorer.getWorld());
+                AthleteManager.get(scorerId).getExplosion().mediumExplosion(hoopLocation);
+
+                // Check 1v1 win condition
+                int currentHomeScore = this.homeScore;
+                int currentAwayScore = this.awayScore;
+
+                boolean gameOver = false;
+                Team winner = null;
+
+                if (currentHomeScore >= 21 && (currentHomeScore - currentAwayScore) >= 2) {
+                    gameOver = true;
+                    winner = Team.HOME;
+                } else if (currentAwayScore >= 21 && (currentAwayScore - currentHomeScore) >= 2) {
+                    gameOver = true;
+                    winner = Team.AWAY;
+                }
+
+                if (gameOver) {
+                    this.gameOver(winner);
+                    this.sendTitle(Component.text("The ").color(Colour.partix()).append(
+                            winner.equals(Team.HOME) ? this.home.name : this.away.name
+                    ).append(Component.text(" Win!").color(Colour.partix())));
+                    this.removeBalls();
+                } else {
+                    this.removeBalls();
+                    final Player finalScorer = scorer;
+                    Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                        this.resetHalfCourt1v1PositionsWithOffense(finalScorer);
+                    }, 40L);
+                }
+
                 ball2.clearPerfectShot();
                 this.lastPossessionTeam = null;
-                this.resetShotClock();
+                this.resetShotClockTo12();
+                return;
             }
+
+            // ===== REGULAR GAME (2V2, 3V3, 4V4) SCORING LOGIC =====
+            BaseTeam t = team.equals(Team.HOME) ? this.home : this.away;
+            boolean isThree = ball2.isThreeEligible();
+            Player scorer = ball2.getLastDamager();
+
+            if (scorer != null) {
+                UUID scorerId = scorer.getUniqueId();
+                this.checkAssistEligibility(scorer);
+                PlayerStats stats = this.statsManager.getPlayerStats(scorerId);
+                stats.incrementFGMade();
+                if (isThree) {
+                    stats.increment3FGMade();
+                    stats.incrementThrees();
+                }
+
+                stats.addPoints(isThree ? 3 : 2);
+                this.sendMessage(Component.text(scorer.getName() + "'s current stats: ").color(Colour.title())
+                        .append(Component.text("Points: ", Colour.border()))
+                        .append(Component.text(stats.getPoints(), Colour.allow()))
+                        .append(Component.text(", 3s: ", Colour.border()))
+                        .append(Component.text(stats.getThrees(), Colour.allow()))
+                        .append(Component.text(", Assists: ", Colour.border()))
+                        .append(Component.text(stats.getAssists(), Colour.allow()))
+                        .append(Component.text(", Rebounds: ", Colour.border()))
+                        .append(Component.text(stats.getRebounds(), Colour.allow()))
+                        .append(Component.text(", Steals: ", Colour.border()))
+                        .append(Component.text(stats.getSteals(), Colour.allow())));
+            }
+
+            ball2.setReboundEligible(false);
+
+            if (this.settings.gameType.equals(GameType.AUTOMATIC)) {
+                List<Player> players = team.equals(Team.HOME) ? this.getHomePlayers() : this.getAwayPlayers();
+                if (scorer != null && players.contains(scorer)) {
+                    this.points.put(scorer.getUniqueId(), this.points.getOrDefault(scorer.getUniqueId(), 0) + (isThree ? 3 : 2));
+                    if (isThree) {
+                        this.threes.put(scorer.getUniqueId(), this.threes.getOrDefault(scorer.getUniqueId(), 0) + 1);
+                        if (scorer.hasPermission("rank.vip") || scorer.hasPermission("rank.pro")) {
+                            PlayerDb.add(scorer.getUniqueId(), PlayerDb.Stat.COINS, 1);
+                        }
+                    }
+                }
+            }
+
+            // Generate scoring message
+            Component scoringMessage;
+            if (scorer != null) {
+                String scorerName = scorer.getName();
+                Location hoopLoc = team.equals(Team.HOME) ?
+                        this.getAwayNet().getCenter().toLocation(scorer.getWorld()) :
+                        this.getHomeNet().getCenter().toLocation(scorer.getWorld());
+
+                double distance = ball2.getShotDistance();
+                if (distance == 0.0) {
+                    Location scorerLoc = scorer.getLocation();
+                    distance = scorerLoc.distance(hoopLoc);
+                }
+
+                String shotType;
+                if (isThree) {
+                    if (distance > 8.0) {
+                        shotType = "FROM DOWNTOWN!";
+                    } else {
+                        shotType = "FOR 3!";
+                    }
+                } else {
+                    if (ball2.isDunkAttempt) {
+                        shotType = "DUNKED THE BALL!";
+                    } else if (distance < 3.5) {
+                        shotType = "WITH THE LAYUP!";
+                    } else if (distance < 5.0) {
+                        shotType = "IN THE PAINT!";
+                    } else if (distance < 7.0) {
+                        shotType = "WITH THE MID-RANGE JUMPER!";
+                    } else {
+                        shotType = "WITH THE LONG TWO!";
+                    }
+                }
+
+                scoringMessage = Component.text(scorerName + " " + shotType)
+                        .color(team.equals(Team.HOME) ? TextColor.color(0x00AAFF) : TextColor.color(0xFFAA00))
+                        .decorate(TextDecoration.BOLD);
+
+                Location hoopLocation = team.equals(Team.HOME) ?
+                        this.getAwayNet().getCenter().toLocation(scorer.getWorld()) :
+                        this.getHomeNet().getCenter().toLocation(scorer.getWorld());
+
+                AthleteManager.get(scorer.getUniqueId()).getExplosion().mediumExplosion(hoopLocation);
+            } else {
+                scoringMessage = t.name.append(Component.text(isThree ? " ‣ 3 Points!" : " ‣ 2 Points").color(Colour.partix()));
+            }
+
+            this.sendTitle(scoringMessage);
+
+            this.justScored = true;
+            Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                this.justScored = false;
+            }, 40L);
+
+            // ===== UPDATE SCORE AND CHECK WIN CONDITION =====
+            if (team.equals(Team.HOME)) {
+                this.homeScore += isThree ? 3 : 2;
+
+                // Check win condition for ranked games
+                if (this.settings.compType == CompType.RANKED &&
+                        this.settings.winType.winByTwo &&
+                        this.settings.winType.amount == 21) {
+
+                    int currentHomeScore = this.homeScore;
+                    int currentAwayScore = this.awayScore;
+
+                    boolean homeWins = currentHomeScore >= 21 && (currentHomeScore - currentAwayScore) >= 2;
+
+                    if (homeWins) {
+                        Bukkit.getLogger().info("🎉 HOME WINS RANKED GAME: " + currentHomeScore + "-" + currentAwayScore);
+                        this.gameOver(Team.HOME);
+                        this.sendTitle(Component.text("The ").color(Colour.partix()).append(
+                                this.home.name
+                        ).append(Component.text(" Win!").color(Colour.partix())));
+                        this.removeBalls();
+                        return;
+                    }
+                }
+
+                // ===== INBOUND SEQUENCE AFTER HOME SCORES =====
+                this.removeBalls();
+
+                for (Player player : this.getHomePlayers()) {
+                    if (player != null && player.isOnline()) {
+                        if (this.isInBench(player)) {
+                            continue;
+                        }
+                        Location spawnLoc = this.getHomeSpawn().clone();
+                        spawnLoc.setX(spawnLoc.getX() - 3.0);
+                        player.teleport(spawnLoc);
+                    }
+                }
+
+                this.clearInboundState();
+                this.setState(State.OUT_OF_BOUNDS_THROW_WAIT);
+                this.outOfBoundsLostTeam = Team.AWAY;
+                this.outOfBoundsSide = false;
+
+                Location awayInboundSpot = this.getAwaySpawn().clone().add(0, 1.2, -6);
+                this.inboundSpot = awayInboundSpot.clone();
+                this.inboundingTeam = Team.AWAY;
+
+                this.inboundingActive = true;
+                this.inboundTouchedByInbounder = false;
+                this.inbounderHasReleased = false;
+                this.inbounder = null;
+
+                // Activate press prevention as soon as inbound starts
+                this.pressPrevention = true;
+                this.restrictedTeam = Team.HOME; // Restrict home team (opposite of inbounding away team)
+                this.pressPreventionStartTime = System.currentTimeMillis();
+
+                this.outOfBoundsZ = this.getAwayNet().getCenter().getBlockZ() - 2;
+                this.outOfBoundsHome = false;
+
+                this.setOutOfBoundsImmunity(true);
+
+                Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                    Ball newBall = this.setBall(BallFactory.create(awayInboundSpot, BallType.BASKETBALL, this));
+                    newBall.setStealDelay(0);
+                    newBall.setVelocity(0, 0.05, 0.0);
+                    
+                    // Initialize teammate hotkeys for new ball
+                    if (newBall instanceof Basketball basketball) {
+                        basketball.initializeAllTeammateHotkeys(this);
+                    }
+                }, 20L);
+
+                Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                    this.setOutOfBoundsImmunity(false);
+                }, 140L);
+
+            } else {
+                // ===== AWAY TEAM SCORED =====
+                this.awayScore += isThree ? 3 : 2;
+
+                // Check win condition for ranked games
+                if (this.settings.compType == CompType.RANKED &&
+                        this.settings.winType.winByTwo &&
+                        this.settings.winType.amount == 21) {
+
+                    int currentHomeScore = this.homeScore;
+                    int currentAwayScore = this.awayScore;
+
+                    boolean awayWins = currentAwayScore >= 21 && (currentAwayScore - currentHomeScore) >= 2;
+
+                    if (awayWins) {
+                        Bukkit.getLogger().info("🎉 AWAY WINS RANKED GAME: " + currentHomeScore + "-" + currentAwayScore);
+                        this.gameOver(Team.AWAY);
+                        this.sendTitle(Component.text("The ").color(Colour.partix()).append(
+                                this.away.name
+                        ).append(Component.text(" Win!").color(Colour.partix())));
+                        this.removeBalls();
+                        return;
+                    }
+                }
+
+                // ===== INBOUND SEQUENCE AFTER AWAY SCORES =====
+                this.removeBalls();
+
+                for (Player player : this.getAwayPlayers()) {
+                    if (player != null && player.isOnline()) {
+                        if (this.isInBench(player)) {
+                            continue;
+                        }
+                        Location spawnLoc = this.getAwaySpawn().clone();
+                        spawnLoc.setX(spawnLoc.getX() + 3.0);
+                        player.teleport(spawnLoc);
+                    }
+                }
+
+                this.clearInboundState();
+                this.setState(State.OUT_OF_BOUNDS_THROW_WAIT);
+                this.outOfBoundsLostTeam = Team.HOME;
+                this.outOfBoundsSide = false;
+
+                Location homeInboundSpot = this.getHomeSpawn().clone().add(0, 1.2, 6);
+                this.inboundSpot = homeInboundSpot.clone();
+                this.inboundingTeam = Team.HOME;
+
+
+                this.inboundingActive = true;
+                this.inboundTouchedByInbounder = false;
+                this.inbounderHasReleased = false;
+                this.inbounder = null;
+
+                // Activate press prevention as soon as inbound starts
+                this.pressPrevention = true;
+                this.restrictedTeam = Team.AWAY; // Restrict away team (opposite of inbounding home team)
+                this.pressPreventionStartTime = System.currentTimeMillis();
+
+                this.outOfBoundsZ = this.getHomeNet().getCenter().getBlockZ() + 2;
+                this.outOfBoundsHome = true;
+
+                this.setOutOfBoundsImmunity(true);
+
+                Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                    Ball newBall = this.setBall(BallFactory.create(homeInboundSpot, BallType.BASKETBALL, this));
+                    newBall.setStealDelay(0);
+                    newBall.setVelocity(0, 0.05, 0.0);
+                    
+                    // Initialize teammate hotkeys for new ball
+                    if (newBall instanceof Basketball basketball) {
+                        basketball.initializeAllTeammateHotkeys(this);
+                    }
+                }, 20L);
+
+                Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                    this.setOutOfBoundsImmunity(false);
+                }, 140L);
+            }
+
+            ball2.clearPerfectShot();
+            this.lastPossessionTeam = null;
+            this.resetShotClock();
         }
     }
 
@@ -1817,12 +2796,39 @@ public class BasketballGame
                 player.addPotionEffect(this.settings.gameEffect.effect);
             }
             player.getInventory().setChestplate(this.home.chest);
+
+            // ACCESSORY SYSTEM - Load selected accessory
+            PlayerDb.get(player.getUniqueId(), PlayerDb.Stat.ACCESSORY).thenAccept(accessory -> {
+                Bukkit.getScheduler().runTask(Partix.getInstance(), () -> {
+                    if (accessory == 1) {
+                        // Headband selected - apply team color
+                        ItemStack helmet = Items.armor(Material.LEATHER_HELMET,
+                                this.home.pants.getItemMeta() instanceof LeatherArmorMeta homeMeta ?
+                                        ((LeatherArmorMeta) this.home.pants.getItemMeta()).getColor().asRGB() : 0xFFFFFF,
+                                "Headband", "Your team headband");
+                        player.getInventory().setHelmet(helmet);
+                    } else if (accessory == 2) {
+                        // Remmy hat selected - equip carved pumpkin head
+                        ItemStack pumpkinHead = new ItemStack(Material.CARVED_PUMPKIN);
+                        player.getInventory().setHelmet(pumpkinHead);
+                    } else if (accessory == 3) {
+                        // Champion's Crown - golden helmet
+                        ItemStack crown = new ItemStack(Material.GOLDEN_HELMET);
+                        player.getInventory().setHelmet(crown);
+                    } else {
+                        // Nothing selected - no helmet
+                        player.getInventory().setHelmet(null);
+                    }
+                });
+            });
+
             player.getInventory().setLeggings(this.home.pants);
             player.getInventory().setBoots(this.home.boots);
-            player.getInventory().setItem(6, Items.get(Component.text("Your Bench").color(Colour.partix()), Material.OAK_STAIRS));
             player.getInventory().setItem(7, Items.get(Component.text("Game Settings").color(Colour.partix()), Material.CHEST));
             player.getInventory().setItem(8, Items.get(Component.text("Change Team/Leave Game").color(Colour.partix()), Material.GRAY_DYE));
-            if (this.getHomePlayers().size() < this.settings.playersPerTeam) {
+
+            // FIXED: Never auto-bench in ranked games - always spawn at team spawn
+            if (this.settings.compType == CompType.RANKED || this.getHomePlayers().size() <= this.settings.playersPerTeam) {
                 player.teleport(this.getHomeSpawn());
             } else {
                 this.enterBench(player);
@@ -1830,6 +2836,12 @@ public class BasketballGame
             player.sendMessage(Message.joinTeam("home"));
             this.joinedHome.add(player.getUniqueId());
             this.removeAwayPlayer(player);
+            
+            // Re-initialize hotkeys when team composition changes
+            if (this.getBall() instanceof Basketball basketball) {
+                basketball.initializeAllTeammateHotkeys(this);
+            }
+
         } else if (team.equals(Team.AWAY)) {
             athlete.setSpectator(false);
             this.addAwayPlayer(player);
@@ -1838,12 +2850,35 @@ public class BasketballGame
                 player.addPotionEffect(this.settings.gameEffect.effect);
             }
             player.getInventory().setChestplate(Items.armor(Material.LEATHER_CHESTPLATE, 0xFFFFFF, "Jersey", "Your teams away jersey"));
+
+            // ACCESSORY SYSTEM - Load selected accessory
+            PlayerDb.get(player.getUniqueId(), PlayerDb.Stat.ACCESSORY).thenAccept(accessory -> {
+                Bukkit.getScheduler().runTask(Partix.getInstance(), () -> {
+                    if (accessory == 1) {
+                        // Headband selected - apply team color
+                        ItemStack helmet = Items.armor(Material.LEATHER_HELMET,
+                                this.away.away.getItemMeta() instanceof LeatherArmorMeta awayMeta ?
+                                        ((LeatherArmorMeta) this.away.away.getItemMeta()).getColor().asRGB() : 0xFFFFFF,
+                                "Headband", "Your team headband");
+                        player.getInventory().setHelmet(helmet);
+                    } else if (accessory == 2) {
+                        // Remmy hat selected - equip carved pumpkin head
+                        ItemStack pumpkinHead = new ItemStack(Material.CARVED_PUMPKIN);
+                        player.getInventory().setHelmet(pumpkinHead);
+                    } else {
+                        // Nothing selected - no helmet
+                        player.getInventory().setHelmet(null);
+                    }
+                });
+            });
+
             player.getInventory().setLeggings(this.away.away);
             player.getInventory().setBoots(this.away.boots);
-            player.getInventory().setItem(6, Items.get(Component.text("Your Bench").color(Colour.partix()), Material.OAK_STAIRS));
             player.getInventory().setItem(7, Items.get(Component.text("Game Settings").color(Colour.partix()), Material.CHEST));
             player.getInventory().setItem(8, Items.get(Component.text("Change Team").color(Colour.partix()), Material.GRAY_DYE));
-            if (this.getAwayPlayers().size() < this.settings.playersPerTeam) {
+
+            // FIXED: Never auto-bench in ranked games - always spawn at team spawn
+            if (this.settings.compType == CompType.RANKED || this.getAwayPlayers().size() <= this.settings.playersPerTeam) {
                 player.teleport(this.getAwaySpawn());
             } else {
                 this.enterBench(player);
@@ -1851,6 +2886,12 @@ public class BasketballGame
             player.sendMessage(Message.joinTeam("away"));
             this.joinedAway.add(player.getUniqueId());
             this.removeHomePlayer(player);
+            
+            // Re-initialize hotkeys when team composition changes
+            if (this.getBall() instanceof Basketball basketball) {
+                basketball.initializeAllTeammateHotkeys(this);
+            }
+
         } else {
             player.getActivePotionEffects().clear();
             athlete.setSpectator(true);
@@ -1886,18 +2927,46 @@ public class BasketballGame
                 this.joinTeam(athlete.getPlayer(), GoalGame.Team.SPECTATOR);
             }
         }
+        
+        // Start location-based music for all joining players
+        for (Athlete athlete : athletes) {
+            Player player = athlete.getPlayer();
+            if (player != null) {
+                Partix.getInstance().getLocationMusicManager().startLocationMusic(player);
+            }
+        }
     }
+    public void activatePressPreventionForInbound(Player inbounder) {
+        if (this.isHalfCourt1v1 || this.isSingleHoopMode) {
+            return;
+        }
 
+        if (!this.inboundingActive || this.inboundingTeam == null) {
+            return;
+        }
+
+        // Determine which team should be restricted (the defensive team)
+        Team restrictTeam = (this.inboundingTeam == Team.HOME) ? Team.AWAY : Team.HOME;
+
+        this.pressPrevention = true;
+        this.restrictedTeam = restrictTeam;
+        this.pressPreventionStartTime = System.currentTimeMillis();
+    }
     @Override
     public void onQuit(Athlete... athletes) {
         for (Athlete athlete : athletes) {
             Player player = athlete.getPlayer();
             if (player == null) continue;
+            this.clearCoachIfPresent(player.getUniqueId());
             boolean isProAm = Boolean.TRUE.equals(this.getCustomPropertyOrDefault("proam", false));
             if (this.settings.compType == CompType.RANKED && !this.getState().equals(State.FINAL) && !isProAm) {
                 SeasonDb.remove(player.getUniqueId(), SeasonDb.Stat.POINTS, 3);
                 player.sendMessage("§cYou disconnected from a ranked game. You lost 3 Season Points!");
             }
+            
+            // Stop music before removing athlete
+            Partix.getInstance().getLocationMusicManager().stopLocationMusic(player);
+            
             this.removeAthlete(athlete);
         }
         if (this.getPlayers().isEmpty()) {
@@ -1998,106 +3067,127 @@ public class BasketballGame
             System.out.println("Out of bounds immunity is active, skipping out of bounds handling.");
             return;
         }
+        
+        // Safety check: If ball goes OOB again during inbound WITHOUT being touched, 
+        // the clocks are already frozen - just re-trigger the inbound process
+        if (this.inboundingActive && this.gameClockFrozenForInbound) {
+            System.out.println("⚠️ Ball went OOB again during inbound WITHOUT being touched - clocks remain frozen");
+            // Don't re-freeze (already frozen), just continue with normal OOB logic
+        }
+        
+        this.pressPrevention = false;
+        this.pressPreventionStartTime = 0L; // ✅ RESET TIMER
+        this.restrictedTeam = null;
 
-        // NEW: Check if this is a 1v1 ranked game - if so, skip inbound sequence
-        boolean is1v1Ranked = (this.settings.compType == CompType.RANKED &&
-                this.getHomePlayers().size() == 1 &&
-                this.getAwayPlayers().size() == 1);
+        // ===== CRITICAL: For 1v1 games, SKIP INBOUND SYSTEM ENTIRELY =====
+        if (this.isHalfCourt1v1) {
+            System.out.println("1v1 game detected - handling turnover");
 
-        if (is1v1Ranked) {
-            System.out.println("1v1 Ranked detected - skipping inbound sequence, spawning ball directly");
-            removeBalls();
-
-            // Determine who should get the ball using same logic as normal OOB
+            // Get the player who last had the ball (threw it out or shot it)
             Player lastPossessor = null;
-            boolean wasBallPoked = false;
             if (ball instanceof Basketball basketball) {
-                UUID lastPossessorUUID = basketball.getTrueLastPossessor();
-                wasBallPoked = basketball.wasPoked;
+                UUID lastPossessorUUID = basketball.getLastDamager() != null ?
+                        basketball.getLastDamager().getUniqueId() : null;
                 if (lastPossessorUUID != null) {
                     lastPossessor = Bukkit.getPlayer(lastPossessorUUID);
                 }
             }
 
-            Team ballTeam;
-            if (lastPossessor != null) {
-                Team lastPossessorTeam;
-                if (getHomePlayers().contains(lastPossessor)) {
-                    lastPossessorTeam = Team.HOME;
-                } else if (getAwayPlayers().contains(lastPossessor)) {
-                    lastPossessorTeam = Team.AWAY;
-                } else {
-                    lastPossessorTeam = Team.HOME;
-                }
-
-                if (wasBallPoked) {
-                    ballTeam = lastPossessorTeam;
-                } else {
-                    ballTeam = (lastPossessorTeam == Team.HOME) ? Team.AWAY : Team.HOME;
-                }
-            } else {
-                ballTeam = Team.HOME;
+            if (lastPossessor == null) {
+                System.out.println("No last possessor found, resetting randomly");
+                this.resetHalfCourt1v1Positions();
+                return;
             }
 
-            // Spawn ball at the player's location who should get it
-            Player ballOwner = ballTeam == Team.HOME ? this.getHomePlayers().get(0) : this.getAwayPlayers().get(0);
-            Location spawnLoc = ballOwner.getLocation().clone().add(0, 1.5, 0);
-            Ball newBall = this.setBall(BallFactory.create(spawnLoc, BallType.BASKETBALL, this));
-            newBall.setStealDelay(0);
+            // Find the other player (the one who should get the ball)
+            List<Player> allPlayers = new ArrayList<>();
+            allPlayers.addAll(this.getHomePlayers());
+            allPlayers.addAll(this.getAwayPlayers());
 
-            this.resetShotClock();
-            this.sendTitle(Component.text("Out of Bounds: " + (ballTeam == Team.HOME ? "Home Ball" : "Away Ball"))
-                    .style(Style.style(Colour.deny(), TextDecoration.BOLD)));
-
-            if (ball instanceof Basketball basketball) {
-                basketball.clearPokeFlags();
+            if (allPlayers.size() != 2) {
+                System.out.println("ERROR: 1v1 doesn't have 2 players!");
+                this.resetHalfCourt1v1Positions();
+                return;
             }
-            return;
+
+            Player otherPlayer = allPlayers.get(0).equals(lastPossessor) ?
+                    allPlayers.get(1) : allPlayers.get(0);
+
+            System.out.println("1v1 Turnover: " + lastPossessor.getName() + " turned it over");
+            System.out.println("Ball goes to: " + otherPlayer.getName());
+            
+            // Add turnover stat
+            if (this.getState().equals(State.REGULATION) || this.getState().equals(State.OVERTIME)) {
+                this.statsManager.getPlayerStats(lastPossessor.getUniqueId()).incrementTurnovers();
+            }
+
+            // Reset with OTHER player as offensive (gets the ball back)
+            this.resetHalfCourt1v1PositionsWithOffense(otherPlayer);
+            return;  // EXIT - Don't run any inbound logic
         }
 
         Location outOfBoundsLocation = this.findClosestPointOnBoundary(ball.getLocation());
         removeBalls();
 
-        // Get the true last possessor (handles poked balls)
         Player lastPossessor = null;
         boolean wasBallPoked = false;
+        boolean wasBallBlocked = false;
         if (ball instanceof Basketball basketball) {
             UUID lastPossessorUUID = basketball.getTrueLastPossessor();
-            wasBallPoked = basketball.wasPoked; // Check if ball was poked
+            wasBallPoked = basketball.wasPoked;
+            wasBallBlocked = (basketball.lastShotBlockerUUID != null);
             if (lastPossessorUUID != null) {
                 lastPossessor = Bukkit.getPlayer(lastPossessorUUID);
             }
         }
 
-        // Determine possession
+// Determine possession
         Team inboundTeam;
         if (lastPossessor != null) {
-            Team lastPossessorTeam;
+            Team lastPossessorTeam = null;
+
+            // ✅ SAFER TEAM DETECTION
             if (getHomePlayers().contains(lastPossessor)) {
                 lastPossessorTeam = Team.HOME;
             } else if (getAwayPlayers().contains(lastPossessor)) {
                 lastPossessorTeam = Team.AWAY;
-            } else {
-                lastPossessorTeam = Team.HOME; // Default
             }
 
-            // CRITICAL FIX: Poke logic
-            if (wasBallPoked) {
-                // Ball was poked - getTrueLastPossessor() returns the VICTIM
-                // VICTIM's team should get the ball back
-                inboundTeam = lastPossessorTeam;
-                System.out.println("Ball was poked OOB - victim's team (" + inboundTeam + ") gets possession back");
+            // ✅ ONLY PROCEED IF WE KNOW THE TEAM
+            if (lastPossessorTeam != null) {
+                if (wasBallPoked || wasBallBlocked) {
+                    // Victim's team keeps possession
+                    inboundTeam = lastPossessorTeam;
+                    System.out.println("DEBUG: " + (wasBallPoked ? "Poke" : "Block") +
+                            " OOB - " + lastPossessorTeam + " keeps ball");
+                } else {
+                    // Normal OOB - opposite team gets ball
+                    inboundTeam = (lastPossessorTeam == Team.HOME) ? Team.AWAY : Team.HOME;
+                    System.out.println("DEBUG: Normal OOB - " + inboundTeam + " gets ball");
+                }
             } else {
-                // Normal out of bounds - opposite team gets ball
-                inboundTeam = (lastPossessorTeam == Team.HOME) ? Team.AWAY : Team.HOME;
-                System.out.println("Normal OOB - opposite team (" + inboundTeam + ") gets possession");
+                // ⚠️ FALLBACK: Player not on either team (disconnected?)
+                // Default to HOME team
+                inboundTeam = Team.HOME;
+                System.out.println("⚠️ WARNING: lastPossessor not found on either team! Defaulting to HOME");
             }
         } else {
-            inboundTeam = Team.HOME; // Default
+            // No last possessor found - default to HOME
+            inboundTeam = Team.HOME;
+            System.out.println("⚠️ WARNING: No lastPossessor found! Defaulting to HOME");
         }
+
 
         state = State.OUT_OF_BOUNDS_THROW_WAIT;
         outOfBoundsLostTeam = inboundTeam;
+        
+        // Add turnover stat for player who threw it out (unless it was poked/blocked)
+        if (lastPossessor != null && !wasBallPoked && !wasBallBlocked) {
+            if (this.getState().equals(State.REGULATION) || this.getState().equals(State.OVERTIME)) {
+                this.statsManager.getPlayerStats(lastPossessor.getUniqueId()).incrementTurnovers();
+                System.out.println("Turnover stat added to " + lastPossessor.getName() + " for out of bounds");
+            }
+        }
 
         // SHOT CLOCK LOGIC - Only reset if NOT a poked ball
         if (wasBallPoked) {
@@ -2134,30 +3224,35 @@ public class BasketballGame
 
         this.inboundSpot = finalInboundSpot.clone();
         this.inboundingTeam = inboundTeam;
+
         this.inboundingActive = true;
         this.inboundTouchedByInbounder = false;
         this.inbounderHasReleased = false;
+        this.inbounder = null;
 
-        // Select inbounder from the team that has possession
-        List<Player> inboundCandidates = inboundTeam == Team.HOME ? this.getHomePlayers() : this.getAwayPlayers();
-        this.inbounder = inboundCandidates.stream()
-                .min(Comparator.comparingDouble(p -> p.getLocation().distance(finalInboundSpot)))
-                .orElse(null);
+        // Activate press prevention as soon as inbound starts
+        this.pressPrevention = true;
+        this.restrictedTeam = (inboundTeam == Team.HOME) ? Team.AWAY : Team.HOME;
+        this.pressPreventionStartTime = System.currentTimeMillis();
 
-        if (this.inbounder == null) {
-            this.inboundingActive = false;
-            System.out.println("No inbounder found!");
-            return;
-        }
+        // NBA Rule: Freeze both clocks on out of bounds
+        this.shotClockFrozenForInbound = true;
+        this.gameClockFrozenForInbound = true;
+        System.out.println("✓ Both clocks FROZEN on OOB (NBA rule)");
 
-        // Spawn ball at inbound spot THEN set immunity AND start timer
+        // Activate immunity BEFORE spawning ball
+        this.setOutOfBoundsImmunity(true);
+        System.out.println("OOB immunity activated BEFORE ball spawn");
+
+        // Spawn ball at inbound spot
         Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
             Ball newBall = setBall(BallFactory.create(finalInboundSpot, BallType.BASKETBALL, this));
             newBall.setStealDelay(0);
-
-            // Set immunity AFTER ball is spawned
-            this.setOutOfBoundsImmunity(true);
-
+            
+            // Initialize teammate hotkeys for new ball
+            if (newBall instanceof Basketball basketball) {
+                basketball.initializeAllTeammateHotkeys(this);
+            }
         }, 30L);
 
         sendTitle(Component.text("Out of Bounds: " +
@@ -2165,10 +3260,11 @@ public class BasketballGame
                 Style.style(Colour.deny(), TextDecoration.BOLD)
         ));
 
-        // Clear poke flags AFTER out-of-bounds is resolved
+        // Clear poke flags AND block flags AFTER out-of-bounds is resolved
         if (ball instanceof Basketball basketball) {
             basketball.clearPokeFlags();
-            System.out.println("Poke flags cleared after OOB resolution");
+            basketball.clearBlockerFlag();
+            System.out.println("Poke and block flags cleared after OOB resolution");
         }
     }
 
@@ -2214,8 +3310,161 @@ public class BasketballGame
 
     public void start() {
         this.reset();
-        this.startCountdown(GoalGame.State.FACEOFF, 10);
+
+        // For 1v1: Skip jump ball and go straight to game start
+        if (this.isHalfCourt1v1) {
+            this.start1v1Game();
+        } else {
+            // Normal game: Start with jump ball
+            this.startCountdown(GoalGame.State.FACEOFF, 10);
+        }
     }
+
+    private void clearInboundState() {
+        this.inboundingActive = false;
+        this.inbounder = null;
+        this.inboundTouchedByInbounder = false;
+        this.inbounderHasReleased = false;
+        this.inboundPassTime = 0L;
+
+        if (this.inboundBarrierTask != null) {
+            this.inboundBarrierTask.cancel();
+            this.inboundBarrierTask = null;
+        }
+        if (this.inboundTimer != null) {
+            this.inboundTimer.cancel();
+            this.inboundTimer = null;
+        }
+    }
+
+    /**
+     * Clears the inbound state if the specified player is NOT the current inbounder.
+     * This prevents the "can't shoot while inbounding" message from appearing for players
+     * who are not actually inbounding.
+     */
+    public void clearInboundStateIfNotInbounder(Player newPossessor) {
+        if (this.inboundingActive) {
+            // If inbounder is null OR the new possessor is not the inbounder, clear the state
+            if (this.inbounder == null || !this.inbounder.equals(newPossessor)) {
+                System.out.println("Clearing inbound state - possession changed to " + newPossessor.getName() + 
+                                   " (inbounder was: " + (this.inbounder != null ? this.inbounder.getName() : "NULL") + ")");
+                this.inboundingActive = false;
+                this.inbounder = null;
+                this.inboundTouchedByInbounder = false;
+                this.inbounderHasReleased = false;
+                
+                // CRITICAL FIX: Unfreeze the shot clock when possession changes during inbound
+                this.shotClockFrozenForInbound = false;
+                this.gameClockFrozenForInbound = false;
+                System.out.println("✓ Shot clock and game clock unfrozen - possession changed during inbound");
+                
+                // Don't clear the timer tasks here - let onInboundPass handle that if needed
+            }
+        }
+    }
+
+    public void handleInboundTurnover() {
+        // Clear press prevention on turnover
+        this.pressPrevention = false;
+        this.pressPreventionStartTime = 0L; // ✅ RESET TIMER
+        this.restrictedTeam = null;
+        System.out.println("Press prevention cleared - Inbound turnover detected");
+    }
+
+    public void start1v1Game() {
+        if (!this.isHalfCourt1v1) {
+            return;
+        }
+
+        Bukkit.getLogger().info("✓ Starting 1V1 game - skipping jump ball");
+
+        // Remove any existing balls
+        this.removeBalls();
+
+        // ===== CLEAR BOTH NETS (don't spawn new ones) =====
+        World world = this.getCenter().getWorld();
+        Location h = this.getHomeNet().clone().getCenter().toLocation(world);
+        h.getBlock().setType(Material.AIR);
+        h.subtract(0.0, 1.0, 0.0).getBlock().setType(Material.AIR);
+
+        Location a = this.getAwayNet().clone().getCenter().toLocation(world);
+        a.getBlock().setType(Material.AIR);
+        a.subtract(0.0, 1.0, 0.0).getBlock().setType(Material.AIR);
+
+        // ===== TELEPORT PLAYERS TO STARTING POSITIONS =====
+        List<Player> allPlayers = new ArrayList<>();
+        allPlayers.addAll(this.getHomePlayers());
+        allPlayers.addAll(this.getAwayPlayers());
+
+        if (allPlayers.size() != 2) {
+            Bukkit.getLogger().warning("ERROR: 1v1 game doesn't have exactly 2 players!");
+            return;
+        }
+
+        Player homePlayer = this.getHomePlayers().get(0);
+        Player awayPlayer = this.getAwayPlayers().get(0);
+
+        // Get hoop locations
+        Location homeHoopCenter = this.getHomeNet().getCenter().toLocation(world);
+        Location awayHoopCenter = this.getAwayNet().getCenter().toLocation(world);
+        Location centerOfCourt = this.getCenter().clone();
+
+        // Determine direction toward each hoop
+        double homeDirection = homeHoopCenter.getZ() > centerOfCourt.getZ() ? 1.0 : -1.0;
+        double awayDirection = awayHoopCenter.getZ() > centerOfCourt.getZ() ? 1.0 : -1.0;
+
+        // Home player starts at half-court, attacking toward away hoop
+        Location homeStartSpawn = centerOfCourt.clone();
+        homeStartSpawn.setX(homeHoopCenter.getX());
+        homeStartSpawn.setZ(centerOfCourt.getZ() + (2.0 * (awayDirection > 0 ? -1.0 : 1.0)));
+        homeStartSpawn.setY(world.getHighestBlockYAt((int)homeStartSpawn.getX(), (int)homeStartSpawn.getZ()) + 1.0);
+        homeStartSpawn.setPitch(0);
+        homeStartSpawn.setYaw(0);
+
+        // Away player starts at 3-point line, defending
+        Location awayDefenseSpawn = homeStartSpawn.clone();
+        awayDefenseSpawn.setZ(homeStartSpawn.getZ() - (6.5 * (awayDirection > 0 ? -1.0 : 1.0)));
+        awayDefenseSpawn.setY(world.getHighestBlockYAt((int)awayDefenseSpawn.getX(), (int)awayDefenseSpawn.getZ()) + 1.0);
+        awayDefenseSpawn.setPitch(0);
+        awayDefenseSpawn.setYaw(0);
+
+        // TELEPORT IMMEDIATELY
+        homePlayer.teleport(homeStartSpawn);
+        awayPlayer.teleport(awayDefenseSpawn);
+
+        Bukkit.getLogger().info("✓ Players teleported: Home at " + homeStartSpawn + ", Away at " + awayDefenseSpawn);
+
+        // Freeze players for 2 seconds
+        homePlayer.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 40, 5, false, false));
+        awayPlayer.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 40, 5, false, false));
+
+        // Set game state
+        this.setState(GoalGame.State.REGULATION);
+        this.resetShotClockTo12();
+
+        // ===== MAKE FINAL COPY FOR LAMBDA =====
+        final Player finalHomePlayer = homePlayer;
+
+        // Spawn ball in home player's hand AFTER 2 seconds
+        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+            if (!finalHomePlayer.isOnline()) {
+                return;
+            }
+            Location ballSpawn = finalHomePlayer.getEyeLocation().clone();
+            Ball newBall = this.setBall(BallFactory.create(ballSpawn, BallType.BASKETBALL, this));
+            newBall.setStealDelay(0);
+            newBall.setVelocity(0, 0, 0);
+
+            // Initialize teammate hotkeys at game start
+            if (newBall instanceof Basketball basketball) {
+                basketball.initializeAllTeammateHotkeys(this);
+            }
+
+            this.sendTitle(Component.text("PLAY!").color(Colour.allow()).decorate(TextDecoration.BOLD));
+            Bukkit.getLogger().info("✓ Ball spawned in hand");
+        }, 40L);
+    }
+
 
     public void generateStatsFile() {
         System.out.println("Debug: generateStatsFile() triggered.");
@@ -2312,7 +3561,10 @@ public class BasketballGame
                 continue;
             Player player = Bukkit.getPlayer(playerId);
             String playerName = player != null ? player.getName() : "Unknown";
-            Component statsMessage = Component.text(playerName + ": ", Colour.title()).append(Component.text("Points: ", Colour.border()).append(Component.text(stats.getPoints(), Colour.allow()))).append(Component.text(", 3s: ", Colour.border()).append(Component.text(stats.getThrees(), Colour.allow()))).append(Component.text(", Assists: ", Colour.border()).append(Component.text(stats.getAssists(), Colour.allow()))).append(Component.text(", Rebounds: ", Colour.border()).append(Component.text(stats.getRebounds(), Colour.allow()))).append(Component.text(", Steals: ", Colour.border()).append(Component.text(stats.getSteals(), Colour.allow())));
+            int minutesPlayedInt = (int)(stats.getMinutesPlayed() / 60000L);
+            int secondsPlayedRemainder = (int)((stats.getMinutesPlayed() % 60000L) / 1000L);
+            String timePlayedStr = String.format("%d:%02d", minutesPlayedInt, secondsPlayedRemainder);
+            Component statsMessage = Component.text(playerName + ": ", Colour.title()).append(Component.text("Points: ", Colour.border()).append(Component.text(stats.getPoints(), Colour.allow()))).append(Component.text(", 3s: ", Colour.border()).append(Component.text(stats.getThrees(), Colour.allow()))).append(Component.text(", Assists: ", Colour.border()).append(Component.text(stats.getAssists(), Colour.allow()))).append(Component.text(", Rebounds: ", Colour.border()).append(Component.text(stats.getRebounds(), Colour.allow()))).append(Component.text(", Steals: ", Colour.border()).append(Component.text(stats.getSteals(), Colour.allow()))).append(Component.text(", Minutes: ", Colour.border()).append(Component.text(timePlayedStr, Colour.allow())));
             this.sendMessage(statsMessage);
             hasStats = true;
         }
@@ -2353,6 +3605,10 @@ public class BasketballGame
             int turnovers = s.getTurnovers();
             long possTimeMillis = s.getPossessionTime();
             int possTimeSec = (int) (possTimeMillis / 1000L);
+            long minutesPlayedMillis = s.getMinutesPlayed();
+            int minutesPlayedMin = (int) (minutesPlayedMillis / 60000L);
+            int minutesPlayedSec = (int) ((minutesPlayedMillis % 60000L) / 1000L);
+            String minutesPlayedStr = String.format("%d:%02d", minutesPlayedMin, minutesPlayedSec);
             int passAttempts = s.getPassAttempts();
             int totalFGMadeLocal = s.getFGMade();
             int totalFGAttLocal = s.getFGAttempted();
@@ -2394,9 +3650,9 @@ public class BasketballGame
                     defendedInfo = defName;
                 }
             }
-            String rawLine = String.format("%s | Points: %d | Assists: %d | Rebounds: %d | Steals: %d | Turnovers: %d | Possession: %d sec | Defended By: %s | Pass Attempts: %d | FG: %d/%d | 3FG: %d/%d | FG%%: %.1f | 3FG%%: %.1f | eFG%%: %.1f | 3PT Rate: %.1f%% | Assists/Pass: %.1f | Fantasy Points: %d", p.getName(), points, assists, rebounds, steals, turnovers, possTimeSec, defendedInfo, passAttempts, totalFGMadeLocal, totalFGAttLocal, threeFGMadeLocal, threeFGAttLocal, totalFGPct, threeFGPct, eFGPct, threePTRate, assistsPerPass, fantasyPoints);
+            String rawLine = String.format("%s | Points: %d | Assists: %d | Rebounds: %d | Steals: %d | Turnovers: %d | Possession: %d sec | Minutes Played: %s | Defended By: %s | Pass Attempts: %d | FG: %d/%d | 3FG: %d/%d | FG%%: %.1f | 3FG%%: %.1f | eFG%%: %.1f | 3PT Rate: %.1f%% | Assists/Pass: %.1f | Fantasy Points: %d", p.getName(), points, assists, rebounds, steals, turnovers, possTimeSec, minutesPlayedStr, defendedInfo, passAttempts, totalFGMadeLocal, totalFGAttLocal, threeFGMadeLocal, threeFGAttLocal, totalFGPct, threeFGPct, eFGPct, threePTRate, assistsPerPass, fantasyPoints);
             rawStatsBuilder.append(rawLine).append("\n\n");
-            Component lineComponent = Component.empty().append(Component.text(p.getName() + " | ").decorate(TextDecoration.BOLD).color(TextColor.color(43775))).append(Component.text("Points: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + points).color(TextColor.color(65280))).append(Component.text(" | Assists: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + assists).color(TextColor.color(65280))).append(Component.text(" | Rebounds: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + rebounds).color(TextColor.color(65280))).append(Component.text(" | Steals: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + steals).color(TextColor.color(65280))).append(Component.text(" | Turnovers: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + turnovers).color(TextColor.color(65280))).append(Component.text(" | Possession: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(possTimeSec + " sec").color(TextColor.color(65280))).append(Component.text(" | Defended By: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(defendedInfo).color(TextColor.color(65280))).append(Component.text(" | Pass Attempts: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + passAttempts).color(TextColor.color(65280))).append(Component.text(" | FG: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(totalFGMadeLocal + "/" + totalFGAttLocal).color(TextColor.color(65280))).append(Component.text(" | 3FG: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(threeFGMadeLocal + "/" + threeFGAttLocal).color(TextColor.color(65280))).append(Component.text(" | FG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", totalFGPct)).color(TextColor.color(65280))).append(Component.text(" | 3FG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", threeFGPct)).color(TextColor.color(65280))).append(Component.text(" | eFG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", eFGPct)).color(TextColor.color(65280))).append(Component.text(" | 3PT Rate: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f%%", threePTRate)).color(TextColor.color(65280))).append(Component.text(" | Assists/Pass: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", assistsPerPass)).color(TextColor.color(65280))).append(Component.text(" | Fantasy Points: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + fantasyPoints).color(TextColor.color(65280)));
+            Component lineComponent = Component.empty().append(Component.text(p.getName() + " | ").decorate(TextDecoration.BOLD).color(TextColor.color(43775))).append(Component.text("Points: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + points).color(TextColor.color(65280))).append(Component.text(" | Assists: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + assists).color(TextColor.color(65280))).append(Component.text(" | Rebounds: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + rebounds).color(TextColor.color(65280))).append(Component.text(" | Steals: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + steals).color(TextColor.color(65280))).append(Component.text(" | Turnovers: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + turnovers).color(TextColor.color(65280))).append(Component.text(" | Possession: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(possTimeSec + " sec").color(TextColor.color(65280))).append(Component.text(" | Minutes Played: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(minutesPlayedStr).color(TextColor.color(65280))).append(Component.text(" | Defended By: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(defendedInfo).color(TextColor.color(65280))).append(Component.text(" | Pass Attempts: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + passAttempts).color(TextColor.color(65280))).append(Component.text(" | FG: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(totalFGMadeLocal + "/" + totalFGAttLocal).color(TextColor.color(65280))).append(Component.text(" | 3FG: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(threeFGMadeLocal + "/" + threeFGAttLocal).color(TextColor.color(65280))).append(Component.text(" | FG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", totalFGPct)).color(TextColor.color(65280))).append(Component.text(" | 3FG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", threeFGPct)).color(TextColor.color(65280))).append(Component.text(" | eFG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", eFGPct)).color(TextColor.color(65280))).append(Component.text(" | 3PT Rate: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f%%", threePTRate)).color(TextColor.color(65280))).append(Component.text(" | Assists/Pass: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", assistsPerPass)).color(TextColor.color(65280))).append(Component.text(" | Fantasy Points: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + fantasyPoints).color(TextColor.color(65280)));
             this.sendMessage(lineComponent);
             homePoints += points;
             homeAssists += assists;
@@ -2444,6 +3700,10 @@ public class BasketballGame
             int turnovers = s.getTurnovers();
             long possTimeMillis = s.getPossessionTime();
             int possTimeSec = (int) (possTimeMillis / 1000L);
+            long minutesPlayedMillis = s.getMinutesPlayed();
+            int minutesPlayedMin = (int) (minutesPlayedMillis / 60000L);
+            int minutesPlayedSec = (int) ((minutesPlayedMillis % 60000L) / 1000L);
+            String minutesPlayedStr = String.format("%d:%02d", minutesPlayedMin, minutesPlayedSec);
             int passAttempts = s.getPassAttempts();
             int totalFGMadeLocal = s.getFGMade();
             int totalFGAttLocal = s.getFGAttempted();
@@ -2481,9 +3741,9 @@ public class BasketballGame
                     defendedName = defName;
                 }
             }
-            String rawLine = String.format("%s | Points: %d | Assists: %d | Rebounds: %d | Steals: %d | Turnovers: %d | Possession: %d sec | Defended By: %s | Pass Attempts: %d | FG: %d/%d | 3FG: %d/%d | FG%%: %.1f | 3FG%%: %.1f | eFG%%: %.1f | 3PT Rate: %.1f%% | Assists/Pass: %.1f | Fantasy Points: %d", p.getName(), points, assists, rebounds, steals, turnovers, possTimeSec, defendedName, passAttempts, totalFGMadeLocal, totalFGAttLocal, threeFGMadeLocal, threeFGAttLocal, totalFGPct, threeFGPct, eFGPct, threePTRate, assistsPerPass, fantasyPoints);
+            String rawLine = String.format("%s | Points: %d | Assists: %d | Rebounds: %d | Steals: %d | Turnovers: %d | Possession: %d sec | Minutes Played: %s | Defended By: %s | Pass Attempts: %d | FG: %d/%d | 3FG: %d/%d | FG%%: %.1f | 3FG%%: %.1f | eFG%%: %.1f | 3PT Rate: %.1f%% | Assists/Pass: %.1f | Fantasy Points: %d", p.getName(), points, assists, rebounds, steals, turnovers, possTimeSec, minutesPlayedStr, defendedName, passAttempts, totalFGMadeLocal, totalFGAttLocal, threeFGMadeLocal, threeFGAttLocal, totalFGPct, threeFGPct, eFGPct, threePTRate, assistsPerPass, fantasyPoints);
             rawStatsBuilder.append(rawLine).append("\n\n");
-            Component lineComponent = Component.empty().append(Component.text(p.getName() + " | ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFAA00))).append(Component.text("Points: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + points).color(TextColor.color(65280))).append(Component.text(" | Assists: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + assists).color(TextColor.color(65280))).append(Component.text(" | Rebounds: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + rebounds).color(TextColor.color(65280))).append(Component.text(" | Steals: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + steals).color(TextColor.color(65280))).append(Component.text(" | Turnovers: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + turnovers).color(TextColor.color(65280))).append(Component.text(" | Possession: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(possTimeSec + " sec").color(TextColor.color(65280))).append(Component.text(" | Defended By: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(defendedName).color(TextColor.color(65280))).append(Component.text(" | Pass Attempts: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + passAttempts).color(TextColor.color(65280))).append(Component.text(" | FG: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(totalFGMadeLocal + "/" + totalFGAttLocal).color(TextColor.color(65280))).append(Component.text(" | 3FG: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(threeFGMadeLocal + "/" + threeFGAttLocal).color(TextColor.color(65280))).append(Component.text(" | FG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", totalFGPct)).color(TextColor.color(65280))).append(Component.text(" | 3FG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", threeFGPct)).color(TextColor.color(65280))).append(Component.text(" | eFG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", eFGPct)).color(TextColor.color(65280))).append(Component.text(" | 3PT Rate: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f%%", threePTRate)).color(TextColor.color(65280))).append(Component.text(" | Assists/Pass: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", assistsPerPass)).color(TextColor.color(65280))).append(Component.text(" | Fantasy Points: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + fantasyPoints).color(TextColor.color(65280)));
+            Component lineComponent = Component.empty().append(Component.text(p.getName() + " | ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFAA00))).append(Component.text("Points: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + points).color(TextColor.color(65280))).append(Component.text(" | Assists: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + assists).color(TextColor.color(65280))).append(Component.text(" | Rebounds: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + rebounds).color(TextColor.color(65280))).append(Component.text(" | Steals: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + steals).color(TextColor.color(65280))).append(Component.text(" | Turnovers: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + turnovers).color(TextColor.color(65280))).append(Component.text(" | Possession: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(possTimeSec + " sec").color(TextColor.color(65280))).append(Component.text(" | Minutes Played: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(minutesPlayedStr).color(TextColor.color(65280))).append(Component.text(" | Defended By: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(defendedName).color(TextColor.color(65280))).append(Component.text(" | Pass Attempts: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + passAttempts).color(TextColor.color(65280))).append(Component.text(" | FG: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(totalFGMadeLocal + "/" + totalFGAttLocal).color(TextColor.color(65280))).append(Component.text(" | 3FG: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(threeFGMadeLocal + "/" + threeFGAttLocal).color(TextColor.color(65280))).append(Component.text(" | FG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", totalFGPct)).color(TextColor.color(65280))).append(Component.text(" | 3FG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", threeFGPct)).color(TextColor.color(65280))).append(Component.text(" | eFG%%: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", eFGPct)).color(TextColor.color(65280))).append(Component.text(" | 3PT Rate: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f%%", threePTRate)).color(TextColor.color(65280))).append(Component.text(" | Assists/Pass: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text(String.format("%.1f", assistsPerPass)).color(TextColor.color(65280))).append(Component.text(" | Fantasy Points: ").decorate(TextDecoration.BOLD).color(TextColor.color(0xFFFFFF))).append(Component.text("" + fantasyPoints).color(TextColor.color(65280)));
             this.sendMessage(lineComponent);
             awayPoints += points;
             awayAssists += assists;
@@ -2576,6 +3836,14 @@ public class BasketballGame
     }
 
     public void openTeamManagementGUI(Player p) {
+        if (this.isInMBAStadium()) {
+            if (!p.hasPermission("rank.coach")) {
+                p.sendMessage(Component.text("§c§l⚠ MBA Arena Restriction"));
+                p.sendMessage(Component.text("§cYou need §e§lCoach §crank to access game settings!"));
+                p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, SoundCategory.MASTER, 1.0f, 1.0f);
+                return;
+            }
+        }
         GUI gui = new GUI("Team Management", 3, false);
         gui.addButton(new ItemButton(10, Items.get(Component.text("Home – Timeout").color(Colour.deny()), Material.RED_DYE), b -> {
             this.homeTimeouts = Math.max(0, this.homeTimeouts - 1);

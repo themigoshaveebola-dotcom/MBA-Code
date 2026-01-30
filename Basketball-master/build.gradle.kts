@@ -12,6 +12,7 @@ repositories {
     maven("https://repo.dmulloy2.net/repository/public/")
     maven("https://repo.extendedclip.com/content/repositories/placeholderapi/")
     maven("https://repo.aikar.co/content/groups/aikar/")
+    maven("https://jitpack.io")
 }
 
 java {
@@ -26,6 +27,7 @@ dependencies {
 
     compileOnly("com.comphenix.protocol:ProtocolLib:5.1.0")
     compileOnly("me.clip:placeholderapi:2.11.6")
+    compileOnly("com.github.LoneDev6:API-ItemsAdder:3.6.1")
 
 }
 

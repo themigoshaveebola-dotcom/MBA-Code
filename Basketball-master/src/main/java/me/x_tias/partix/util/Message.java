@@ -17,13 +17,13 @@ public class Message {
     public static Component sendMessage(Athlete athlete, Component component) {
         Player player = athlete.getPlayer();
         TextColor chatColor = player.hasPermission("rank.admin") ? Colour.adminText() : (player.hasPermission("rank.pro") ? Colour.premiumText() : Colour.text());
-        return athlete.getName().append(component.color(chatColor));
+        return athlete.getName().append(Component.text(" ")).append(component.color(chatColor));
     }
 
     public static Component shoutMessage(Athlete athlete, Component component) {
         Player player = athlete.getPlayer();
         TextColor chatColor = player.hasPermission("rank.admin") ? Colour.adminText() : (player.hasPermission("rank.pro") ? Colour.premiumText() : Colour.text());
-        return Text.section("[#] ", Colour.title()).text().append(athlete.getName().append(component.color(chatColor)));
+        return Text.section("[#] ", Colour.title()).text().append(athlete.getName()).append(Component.text(" ")).append(component.color(chatColor));
     }
 
     public static Component joinParty(String name) {
@@ -83,7 +83,7 @@ public class Message {
     }
 
     public static Component needVIP() {
-        return Text.get(Text.section("Rank > ", Colour.title()), Text.section("You need ", Colour.text()), Text.section("VIP", Colour.bold()), Text.section(" rank to do this! ", Colour.text()), Text.section(" -> ", Colour.bold()), Text.section("store.partix.net", Colour.partix()));
+        return Text.get(Text.section("Rank > ", Colour.title()), Text.section("You need ", Colour.text()), Text.section("VIP", Colour.bold()), Text.section(" rank to do this! ", Colour.text()), Text.section(" -> ", Colour.bold()), Text.section("Minecraft Basketball", Colour.partix()));
     }
 
     public static Component purchaseSuccess(String item, int cost) {
@@ -95,7 +95,7 @@ public class Message {
     }
 
     public static Component needPRO() {
-        return Text.get(Text.section("Rank > ", Colour.title()), Text.section("You need ", Colour.text()), Text.section("PRO", Colour.bold()), Text.section(" rank to do this! ", Colour.text()), Text.section(" -> ", Colour.bold()), Text.section("store.partix.net", Colour.partix()));
+        return Text.get(Text.section("Rank > ", Colour.title()), Text.section("You need ", Colour.text()), Text.section("PRO", Colour.bold()), Text.section(" rank to do this! ", Colour.text()), Text.section(" -> ", Colour.bold()), Text.section("Minecraft Basketball", Colour.partix()));
     }
 
     public static Component cantDoThisNow() {
@@ -111,7 +111,6 @@ public class Message {
     }
 
     public static Component gameOver(int homeScore, int awayScore) {
-        return Text.get(Text.section("==============================\n ", Colour.border()), Text.section("    Game Over ‣ play.partix.net         \n", Colour.title()), Text.section("------------------------------\n", Colour.border()), Text.section("       Final Score: ", Colour.premiumText()), Text.section(Math.max(homeScore, awayScore) + "-" + Math.min(homeScore, awayScore) + "\n", Colour.partix()), Text.section("==============================\n ", Colour.border()));
+        return Text.get(Text.section("==============================\n ", Colour.border()), Text.section("    Game Over ‣ Minecraft Basketball         \n", Colour.title()), Text.section("------------------------------\n", Colour.border()), Text.section("       Final Score: ", Colour.premiumText()), Text.section(Math.max(homeScore, awayScore) + "-" + Math.min(homeScore, awayScore) + "\n", Colour.partix()), Text.section("==============================\n ", Colour.border()));
     }
 }
-

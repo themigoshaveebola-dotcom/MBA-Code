@@ -15,9 +15,13 @@
 package me.x_tias.partix.plugin.listener;
 
 import me.x_tias.partix.database.Databases;
+import me.x_tias.partix.database.DiscordLinkDb;
 import me.x_tias.partix.plugin.athlete.Athlete;
 import me.x_tias.partix.plugin.athlete.AthleteManager;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -38,6 +42,26 @@ public class WelcomeListener
         Athlete athlete = AthleteManager.create(player);
         player.setGameMode(GameMode.ADVENTURE);
         Databases.create(player);
+        
+        // Check if Discord is linked - if not, send reminder message
+        DiscordLinkDb.getLinkedDiscord(player.getUniqueId()).thenAccept(discordId -> {
+            if (discordId == null) {
+                player.sendMessage(Component.empty());
+                player.sendMessage(Component.text("⚠ ", NamedTextColor.YELLOW, TextDecoration.BOLD)
+                        .append(Component.text("Your Discord account isn't linked!", NamedTextColor.RED))
+                );
+                player.sendMessage(Component.text("   Use ", NamedTextColor.GRAY)
+                        .append(Component.text("/linkdiscord", NamedTextColor.AQUA, TextDecoration.BOLD)
+                                .clickEvent(ClickEvent.runCommand("/linkdiscord")))
+                        .append(Component.text(" to link your account.", NamedTextColor.GRAY))
+                );
+                player.sendMessage(Component.text("   Discord: ", NamedTextColor.GRAY)
+                        .append(Component.text("https://discord.gg/yra3gjNRpD", NamedTextColor.LIGHT_PURPLE)
+                                .clickEvent(ClickEvent.openUrl("https://discord.gg/yra3gjNRpD")))
+                );
+                player.sendMessage(Component.empty());
+            }
+        });
     }
 
     @EventHandler
@@ -55,7 +79,7 @@ public class WelcomeListener
             return;
         }
         if (e.getResult().equals(PlayerLoginEvent.Result.KICK_BANNED)) {
-            e.kickMessage(Component.text("§6§lYou are blacklisted\n\n§fYou can appeal your blacklist on our §ddiscord§f!\n\n\n§7Partix Store: §eComing Soon\n§7Partix Discord: §ehttps:\n"));
+            e.kickMessage(Component.text("§6§lYou are blacklisted\n\n§fYou can appeal your blacklist on our §ddiscord§f!\n\n\n§7MBA Store: §eComing Soon\n§7Discord: §ehttps://discord.gg/yra3gjNRpD\n"));
             return;
         }
         if (e.getResult().equals(PlayerLoginEvent.Result.KICK_FULL)) {
@@ -63,7 +87,7 @@ public class WelcomeListener
                 e.allow();
                 return;
             }
-            e.kickMessage(Component.text("§6§lThe server is full (50/50)\n\n§fOur §a§lVIP §r§frank allows you to bypass this limit!\n\n\n§7Partix Store: §Coming Soon\n§7Partix Discord: §ehttps:\n"));
+            e.kickMessage(Component.text("§6§lThe server is full (50/50)\n\n§fOur §a§lVIP §r§frank allows you to bypass this limit!\n\n\n§7MBA Store: §Coming Soon\n§7Discord: §ehttps://discord.gg/yra3gjNRpD\n"));
         }
     }
 }

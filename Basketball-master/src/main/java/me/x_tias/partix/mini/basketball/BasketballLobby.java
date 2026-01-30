@@ -45,7 +45,10 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.event.Listener;
 
 import java.io.File;
 import java.util.*;
@@ -54,7 +57,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 public class BasketballLobby
-        extends Lobby {
+        extends Lobby implements Listener {
     private static final int REC_TEAM_SIZE = 4;
     private static final int[] STADIUM_SLOTS = new int[]{10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25, 28, 29, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 43};
     private static final ItemStack FILLER_PANE = Items.get(Component.text(" "), Material.BLACK_STAINED_GLASS_PANE, 1, " ");
@@ -83,7 +86,7 @@ public class BasketballLobby
     private final List<Stadium> mbaStadiums = new ArrayList<>();
     private final List<Stadium> mcaaStadiums = new ArrayList<>();
     private final List<Stadium> retroStadiums = new ArrayList<>();
-    private final Settings gameSettings = new Settings(WinType.TIME_5, GameType.AUTOMATIC, WaitType.SHORT, CompType.RANKED, 2, true, false, false, 1, GameEffectType.NONE);
+    private final Settings gameSettings;
     private final Settings customSettings = new Settings(WinType.TIME_5, GameType.MANUAL, WaitType.MEDIUM, CompType.CASUAL, 2, false, false, false, 4, GameEffectType.NONE);
     private final Settings recSettings = new Settings(WinType.TIME_5, GameType.AUTOMATIC, WaitType.MEDIUM, CompType.RANKED, 4, false, false, false, 2, GameEffectType.NONE);
     @Getter
@@ -91,22 +94,45 @@ public class BasketballLobby
     private final List<Stadium> customStadiums = new ArrayList<>();
     private final HashMap<UUID, Integer> playerQueueNotifier = new HashMap<>();
     private final int countdown = 170;
+    
+    // 2K Park-style physical queue spots
+    private final List<CourtQueue> twosCourts = new ArrayList<>();
+    private final List<CourtQueue> threesCourts = new ArrayList<>();
+    private BukkitTask particleTask;
+    private final HashMap<UUID, CourtSpot> playerSpots = new HashMap<>();
+    private final HashMap<Location, CourtQueue> gameCourtMapping = new HashMap<>(); // Track which court a game is on
 
     public BasketballLobby() {
+        // Initialize ranked game settings for 2v2/3v3 - First to 21 with win by 2
+        this.gameSettings = new Settings(
+                WinType.FIRST_TO,      // Changed from TIME_5
+                GameType.AUTOMATIC,
+                WaitType.SHORT,
+                CompType.RANKED,
+                2,                     // playersPerTeam
+                true,                  // Shot clock enabled
+                false,
+                false,
+                1,
+                GameEffectType.NONE
+        );
+
+        // Set to 21 points with win by 2 (just like 1v1)
+        this.gameSettings.winType.amount = 21;
+        this.gameSettings.winType.winByTwo = true;
         this.rankedCourts.add(new Location(Bukkit.getWorlds().getFirst(), 42.5, -61, 196.5));
         this.rankedCourts.add(new Location(Bukkit.getWorlds().getFirst(), -24.5, -61, 196.5));
         this.rankedCourts.add(new Location(Bukkit.getWorlds().getFirst(), -24.5, -61, 111.5));
         this.rankedCourts.add(new Location(Bukkit.getWorlds().getFirst(), 42.5, -61, 111.5));
 
-        this.rankedHalfCourts.add(new Location(Bukkit.getWorlds().getFirst(), 145.5, -61, 413.5));
-        this.rankedHalfCourts.add(new Location(Bukkit.getWorlds().getFirst(), 145.5, -61, 328.5));
+        this.rankedHalfCourts.add(new Location(Bukkit.getWorlds().getFirst(), 145.5, -61, 384));
 
 
-        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 285.5, -62, -509.5));
-        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), -226.5, -62, -509.5));
-        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 798.5, -62, 3.5));
-        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 798.5, -62, 472.5));
-        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 798.5, -62, 963.5));
+        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 285.5, -60, -509.5));
+        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), -226.5, -60, -509.5));
+        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 798.5, -60, 3.5));
+        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 798.5, -60, 472.5));
+        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 798.5, -60, 963.5));
 
 
 //        this.myCourts.add(new Location(Bukkit.getWorlds().getFirst(), 98.5, 0.0, 263.5));
@@ -130,19 +156,62 @@ public class BasketballLobby
 //        this.fourVfourDefaultCourts.add(new Location(Bukkit.getWorlds().getFirst(), -283.5, 0.0, 390.5));
 //        this.fourVfourDefaultCourts.add(new Location(Bukkit.getWorlds().getFirst(), -283.5, 0.0, 467.5));
 
-        this.addCustomStadium("§l§6Bronx §9Bison", Material.ORANGE_GLAZED_TERRACOTTA, new Location(Bukkit.getWorlds().getFirst(), 448.5, -63, 963.5), Stadium.Category.MBA);
-        this.addCustomStadium("§l§dMiami Flamingo §bFlyers", Material.PINK_GLAZED_TERRACOTTA, new Location(Bukkit.getWorlds().getFirst(), -42.5, -63, 963.5), Stadium.Category.MBA);
-        this.addCustomStadium("§l§cBoston §fPatriots §9", Material.BLUE_GLAZED_TERRACOTTA, new Location(Bukkit.getWorlds().getFirst(), -532.5, -63, 963.5), Stadium.Category.MBA);
-        this.addCustomStadium("§l§0Cleveland §cBandits", Material.BLACK_GLAZED_TERRACOTTA, new Location(Bukkit.getWorlds().getFirst(), -532.5, -63, 452.5), Stadium.Category.MBA);
-        this.addCustomStadium("§l§0Washington §6Cerberus §8", Material.BLACK_GLAZED_TERRACOTTA, new Location(Bukkit.getWorlds().getFirst(), -576.5, -63, -510.5), Stadium.Category.MBA);
-        this.addCustomStadium("§l§bNashville §9Koalas §7", Material.LIGHT_BLUE_GLAZED_TERRACOTTA, new Location(Bukkit.getWorlds().getFirst(), -576.5, -63, -19.5), Stadium.Category.MBA);
-        this.maps.addAll(this.myCourts);
-    }
+        this.addCustomStadium("§l§9Washington §cWithers", Material.BLUE_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), 448.5, -60, 969.5), Stadium.Category.MBA);
 
+        this.addCustomStadium("§l§cPhiladelphia §964s", Material.RED_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), -42.5, -60, 969.5), Stadium.Category.MBA);
+
+        this.addCustomStadium("§l§cChicago §0Bows", Material.RED_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), -532.5, -60, 969.5), Stadium.Category.MBA);
+
+        this.addCustomStadium("§l§0Brooklyn §fBuckets", Material.BLACK_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), -532.5, -60, 458.5), Stadium.Category.MBA);
+
+        this.addCustomStadium("§l§4Miami §6Magma Cubes", Material.RED_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), -576.5, -60, -504.5), Stadium.Category.MBA);
+
+        this.addCustomStadium("§l§9Golden State §6Guardians", Material.BLUE_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), -576.5, -60, -13.5), Stadium.Category.MBA);
+
+        this.addCustomStadium("§l§cAtlanta §9Allays", Material.RED_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), 576.5, -60, -504.5), Stadium.Category.MBA);
+
+        this.addCustomStadium("§l§5LA §6Creepers", Material.PURPLE_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), 576.5, -60, -13.5), Stadium.Category.MBA);
+
+        this.addCustomStadium("§l§9Boston §fBreeze", Material.CYAN_GLAZED_TERRACOTTA,
+                new Location(Bukkit.getWorlds().getFirst(), 190.5, -60, -1000.5), Stadium.Category.MBA);
+        this.maps.addAll(this.myCourts);
+        
+        // Initialize 2K Park-style queue spots
+        initializePhysicalQueueSpots();
+        
+        // Start particle spawning task
+        startParticleTask();
+        
+        // Register this as an event listener for PlayerMoveEvent and PlayerToggleSneakEvent
+        Bukkit.getPluginManager().registerEvents(this, Partix.getInstance());
+        Bukkit.getLogger().info("[Park Queue] Registered BasketballLobby as event listener");
+    }
     private void addArena(Location location, String arenaName, Material displayBlock) {
         this.arenas.add(location);
         this.arenaNames.put(location, arenaName);
         this.arenaDisplayBlocks.put(arenaName, displayBlock);
+    }
+
+    private Stadium getStadiumAtLocation(Location location) {
+        for (Stadium stadium : this.customStadiums) {
+            Location stadiumLoc = stadium.getLocation();
+
+            if (stadiumLoc.getWorld().equals(location.getWorld()) &&
+                    Math.abs(stadiumLoc.getX() - location.getX()) < 1.0 &&
+                    Math.abs(stadiumLoc.getY() - location.getY()) < 1.0 &&
+                    Math.abs(stadiumLoc.getZ() - location.getZ()) < 1.0) {
+                return stadium;
+            }
+        }
+        return null;
     }
 
     public BasketballGame findAvailableRecCourt() {
@@ -152,7 +221,7 @@ public class BasketballLobby
             return null;
         }
         Location randomLoc = freeRecCourts.get(new Random().nextInt(freeRecCourts.size()));
-        BasketballGame game = new BasketballGame(this.recSettings, randomLoc, 32.0, 2.8, 0.45, 0.475, 0.575);
+        BasketballGame game = new BasketballGame(this.recSettings, randomLoc, 26.0, 2.8, 0.45, 0.475, 0.575);
         this.games.put(randomLoc, game);
         return game;
     }
@@ -173,7 +242,7 @@ public class BasketballLobby
                 GameType.AUTOMATIC,
                 WaitType.SHORT,
                 CompType.RANKED,
-                2,                       // playersPerTeam = 1 (means 2 total: 1v1)
+                1,                       // playersPerTeam = 1 (THIS IS THE KEY!)
                 true,                    // Shot clock enabled (12 seconds)
                 false,
                 false,
@@ -185,7 +254,23 @@ public class BasketballLobby
         oneVOneSettings.winType.amount = 21;
         oneVOneSettings.winType.winByTwo = true;
 
-        BasketballGame game = new BasketballGame(oneVOneSettings, randomLoc, 13.0, 2.8, 0.45, 0.475, 0.575);
+        // CREATE GAME WITH 13.0 DISTANCE AND 1 PLAYER PER TEAM
+        BasketballGame game = new BasketballGame(
+                oneVOneSettings,    // Custom 1v1 settings
+                randomLoc,
+                13.0,               // Half court distance
+                2.8,
+                0.45,
+                0.475,
+                0.575
+        );
+
+        // VERIFY THE FLAG IS SET
+        if (!game.isHalfCourt1v1) {
+            Bukkit.getLogger().warning("ERROR: 1v1 game flag not set! Check settings.playersPerTeam");
+        } else {
+            Bukkit.getLogger().info("✓ 1V1 HALFCOURT GAME CREATED - Flag is TRUE");
+        }
 
         this.games.put(randomLoc, game);
         return game;
@@ -199,7 +284,7 @@ public class BasketballLobby
             return;
         }
         Location randomLoc = freeList.get(new Random().nextInt(freeList.size()));
-        BasketballGame game = new BasketballGame(this.customSettings, randomLoc, 32.0, 2.8, 0.45, 0.475, 0.575);
+        BasketballGame game = new BasketballGame(this.customSettings, randomLoc, 26.0, 2.8, 0.45, 0.475, 0.575);
         game.owner = player.getUniqueId();
         this.games.put(randomLoc, game);
         Athlete athlete = AthleteManager.get(player.getUniqueId());
@@ -262,29 +347,50 @@ public class BasketballLobby
     }
 
     public void openArenaCategorySelectorGUI(Player player) {
-        if (!player.hasPermission("rank.vip")) {
-            player.sendMessage("§cYou need §aVIP §cto browse the stadium folders!");
-            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, SoundCategory.MASTER, 1.0f, 1.0f);
-            return;
-        }
+        // Check if player has Coach rank for MBA arenas
+        boolean hasCoachRank = player.hasPermission("basketball.mba.create") || player.hasPermission("rank.coach");
+
         ItemButton[] btn = new ItemButton[27];
         for (int i = 0; i < btn.length; ++i) {
-            btn[i] = new ItemButton(i, FILLER_PANE, p -> {
-            });
+            btn[i] = new ItemButton(i, FILLER_PANE, p -> {});
         }
+
         BiConsumer<Integer, Stadium.Category> cat = (slot, category) -> {
             Material iconMat = switch (category) {
                 case Stadium.Category.MBA -> Material.NETHER_STAR;
                 case Stadium.Category.MCAA -> Material.ENDER_EYE;
                 case Stadium.Category.RETRO -> Material.CLOCK;
             };
+
             Component title = Component.text(switch (category) {
                 case Stadium.Category.MBA -> "MBA Stadiums";
                 case Stadium.Category.MCAA -> "MCAA Stadiums";
                 case Stadium.Category.RETRO -> "Retro Stadiums";
             }).color(Colour.partix());
-            btn[slot] = new ItemButton(slot, Items.get(title, iconMat, 1, "§7Browse this folder"), p -> this.openStadiumFolderGUI(p, category));
+
+            // MBA restriction logic
+            if (category == Stadium.Category.MBA && !hasCoachRank) {
+                // Show locked MBA button
+                btn[slot] = new ItemButton(slot,
+                        Items.get(title, Material.BARRIER, 1,
+                                "§c§l⚠ Coach Rank Required!",
+                                "§7MBA arenas require §e§lCoach §7rank",
+                                "§7to create games.",
+                                " ",
+                                "§7Ask a staff member for access."),
+                        p -> {
+                            p.sendMessage("§c§l⚠ MBA Arenas Restricted!");
+                            p.sendMessage("§cYou need §e§lCoach §crank to access MBA arenas.");
+                            p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, SoundCategory.MASTER, 1.0f, 1.0f);
+                        });
+            } else {
+                // Show normal button (unlocked or non-MBA)
+                String loreText = (category == Stadium.Category.MBA) ? "§a§lCoach Access! §7Browse MBA stadiums" : "§7Browse this folder";
+                btn[slot] = new ItemButton(slot, Items.get(title, iconMat, 1, loreText),
+                        p -> this.openStadiumFolderGUI(p, category));
+            }
         };
+
         cat.accept(11, Stadium.Category.MBA);
         cat.accept(13, Stadium.Category.MCAA);
         cat.accept(15, Stadium.Category.RETRO);
@@ -386,10 +492,57 @@ public class BasketballLobby
         if (athlete == null) {
             return;
         }
+
         if (itemStack.getType() == Material.NETHER_STAR) {
             Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> Hub.basketballLobby.openGameSelectorGUI(player), 1L);
         }
+
+        // ===== GAME SETTINGS WITH MBA-ONLY COACH RESTRICTION =====
+        if (itemStack.getType() == Material.CHEST) {
+            // Find player's current game
+            BasketballGame game = this.games.values().stream()
+                    .filter(g -> g.getPlayers().contains(player))
+                    .findFirst()
+                    .orElse(null);
+
+            if (game == null) {
+                player.sendMessage("§cYou must be in a game to access settings!");
+                return;
+            }
+
+            Location gameLoc = game.getLocation();
+
+            // Method 1: Check using Stadium.Category (RECOMMENDED)
+            Stadium stadium = getStadiumAtLocation(gameLoc);
+            boolean isMBA = (stadium != null && stadium.getCategory() == Stadium.Category.MBA);
+
+            // OR Method 2: Check using mbaStadiums list
+            // boolean isMBA = this.isMBAStadium(gameLoc);
+
+            // OR Method 3: Check using hardcoded coordinates (fastest)
+            // boolean isMBA = this.isMBAStadiumHardcoded(gameLoc);
+
+            if (isMBA) {
+                // MBA ARENA - Require Coach permission
+                if (!player.hasPermission("basketball.gamesettings.mba") && !player.hasPermission("rank.coach")) {
+                    player.sendMessage("§c§l⚠ MBA Arenas Only!");
+                    player.sendMessage("§cYou need §e§lCoach §crank to access game settings in MBA arenas.");
+                    player.sendMessage("§7Ask a staff member for the Coach rank.");
+                    player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, SoundCategory.MASTER, 1.0f, 1.0f);
+                    return;
+                }
+
+                // Player has Coach permission - allow access
+                player.sendMessage("§a§lCoach Access Granted!");
+                game.openTeamManagementGUI(player);  // ✅ FIXED
+            } else {
+                // NON-MBA COURT - Allow everyone (or add custom permission check here)
+                player.sendMessage("§7Opening game settings...");
+                game.openTeamManagementGUI(player);  // ✅ FIXED
+            }
+        }
     }
+
 
     public void addCustomStadium(String name, Material block, Location loc, Stadium.Category folder) {
         Stadium s = new Stadium(name, block, loc, folder);
@@ -417,7 +570,9 @@ public class BasketballLobby
         Bukkit.getLogger().info("Returning " + this.customStadiums.size() + " custom stadiums.");
         return new ArrayList<>(this.customStadiums);
     }
-
+    public List<Location> getMyCourts() {
+        return this.myCourts;
+    }
     public void saveStadiums(File file) {
         YamlConfiguration config = new YamlConfiguration();
         for (int i = 0; i < this.customStadiums.size(); ++i) {
@@ -471,6 +626,7 @@ public class BasketballLobby
     @Override
     public void onTick() {
         this.games.values().forEach(BasketballGame::onTick);
+        
         if (this.countdown > 5) {
             if (this.isReady()) {
                 if (this.countdown > 70) {
@@ -509,6 +665,22 @@ public class BasketballLobby
         return total > 1;
     }
 
+    private boolean isMBAStadium(Location location) {
+        // Check if location matches any MBA stadium
+        for (Stadium stadium : this.mbaStadiums) {
+            Location stadiumLoc = stadium.getLocation();
+
+            // Compare locations (accounting for floating point precision)
+            if (stadiumLoc.getWorld().equals(location.getWorld()) &&
+                    Math.abs(stadiumLoc.getX() - location.getX()) < 1.0 &&
+                    Math.abs(stadiumLoc.getY() - location.getY()) < 1.0 &&
+                    Math.abs(stadiumLoc.getZ() - location.getZ()) < 1.0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void joinMatch(BasketballGame game, Team home, Team away) {
         this.updateBossBar("§eSending to Match..", 0.0);
         for (Athlete athlete : home.getAthletes()) {
@@ -519,7 +691,18 @@ public class BasketballLobby
             game.join(athlete);
             game.joinTeam(athlete.getPlayer(), GoalGame.Team.AWAY);
         }
-        game.startCountdown(GoalGame.State.FACEOFF, 15);
+
+        // For 1v1: Skip jump ball
+        if (game instanceof BasketballGame) {
+            BasketballGame bbGame = (BasketballGame) game;
+            if (bbGame.isHalfCourt1v1) {
+                bbGame.start1v1Game();
+            } else {
+                game.startCountdown(GoalGame.State.FACEOFF, 15);
+            }
+        } else {
+            game.startCountdown(GoalGame.State.FACEOFF, 15);
+        }
     }
 
     public BasketballGame findAvailableGame(boolean custom) {
@@ -556,7 +739,13 @@ public class BasketballLobby
     public void onJoin(Athlete... athletes) {
         for (Athlete athlete : athletes) {
             Player player = athlete.getPlayer();
-            PlayerDb.create(player.getUniqueId(), player.getName());
+            UUID uuid = player.getUniqueId();
+
+            // REMOVE ANY STALE QUEUE ENTRIES FROM PREVIOUS SESSION
+            this.removePlayerFromAllQueues(uuid);
+            this.playerQueueNotifier.remove(uuid);
+
+            PlayerDb.create(uuid, player.getName());
             athlete.setSpectator(true);
             player.teleport(new Location(Bukkit.getWorlds().getFirst(), 0.5, -58.0, 0.5));
             this.generateSkill(athlete).thenAccept(skillValue -> this.skill.put(athlete, skillValue));
@@ -569,9 +758,15 @@ public class BasketballLobby
         for (Athlete athlete : athletes) {
             Player player = athlete.getPlayer();
             if (player == null) continue;
-            Hub.basketballLobby.leaveQueue(player);
-            this.removeCancelItem(player);
+
             UUID uuid = player.getUniqueId();
+
+            // Remove from ALL queues FIRST
+            this.removePlayerFromAllQueues(uuid);
+            this.removeCancelItem(player);
+            this.playerQueueNotifier.remove(uuid);
+
+            // Then handle game cleanup
             this.games.keySet().forEach(location -> {
                 BasketballGame game = this.games.get(location);
                 List<Player> players = game.getPlayers();
@@ -584,6 +779,10 @@ public class BasketballLobby
                     }
                 }
             });
+
+            // Update GUI for remaining players
+            Bukkit.getScheduler().runTaskLater(Partix.getInstance(),
+                    this::updateGameSelectorGUI, 5L);
         }
     }
 
@@ -648,7 +847,7 @@ public class BasketballLobby
         }
         Location loc = stadium.getLocation();
         this.arenaNames.put(loc, stadium.getName());
-        this.createBasketballGame(player, loc, 32);
+        this.createBasketballGame(player, loc, 26);
     }
 
     public void createGameInStadium(Player player, String name) {
@@ -658,7 +857,6 @@ public class BasketballLobby
     private void equipPlayerForGame(Player player) {
         player.getInventory().clear();
         player.getInventory().addItem(Items.get(Component.text("Team Selector").color(Colour.partix()), Material.GRAY_DYE, 1, "§7Select your team"));
-        player.getInventory().addItem(Items.get(Component.text("Bench Control").color(Colour.partix()), Material.OAK_STAIRS, 1, "§7Enter or leave the bench"));
         player.getInventory().addItem(Items.get(Component.text("Game Settings").color(Colour.partix()), Material.CHEST, 1, "§7Manage game settings"));
         player.sendMessage("§aYou have been equipped with game management items.");
     }
@@ -831,37 +1029,45 @@ public class BasketballLobby
             game.join(a2);
             game.joinTeam(a2.getPlayer(), GoalGame.Team.AWAY);
         }
-        game.startCountdown(GoalGame.State.FACEOFF, 15);
+// For 1v1: Skip jump ball and go straight to game start
+        if (game instanceof BasketballGame) {
+            BasketballGame bbGame = (BasketballGame) game;
+            if (bbGame.isHalfCourt1v1) {
+                bbGame.start1v1Game();  // Skip jump ball for 1v1
+            } else {
+                game.startCountdown(GoalGame.State.FACEOFF, 15);  // Normal jump ball for 2v2, 3v3, 4v4
+            }
+        } else {
+            game.startCountdown(GoalGame.State.FACEOFF, 15);
+        }
     }
 
     public void leaveQueue(Player player) {
-        Athlete athlete = AthleteManager.get(player.getUniqueId());
+        UUID playerId = player.getUniqueId();
+        Athlete athlete = AthleteManager.get(playerId);
+
         if (athlete == null) {
+            // Even if athlete is null, clean up by UUID
+            this.removePlayerFromAllQueues(playerId);
+            player.sendMessage("§cYou have left the queue.");
             return;
         }
+
         int partyId = athlete.getParty();
         Party party = partyId > 0 ? PartyFactory.get(partyId) : null;
 
-        // Remove from ALL queues (including 1v1 which was missing!)
-        this.removeFromQueue(this.queue1v1, athlete);
-        this.removeFromQueue(this.queue2v2, athlete);
-        this.removeFromQueue(this.queue3v3, athlete);
-        this.removeFromQueue(this.queue4v4, athlete);
-
-        this.waitingExtras.remove(athlete);
-        this.waitingTeams.removeIf(team -> team.getAthletes().contains(athlete));
+        // Remove player by UUID
+        this.removePlayerFromAllQueues(playerId);
 
         // If player is in a party, remove all party members from queues too
         if (party != null) {
             for (Athlete a : party.toList()) {
-                this.removeFromQueue(this.queue1v1, a);
-                this.removeFromQueue(this.queue2v2, a);
-                this.removeFromQueue(this.queue3v3, a);
-                this.removeFromQueue(this.queue4v4, a);
-                this.waitingExtras.remove(a);
-                this.waitingTeams.removeIf(team -> team.getAthletes().contains(a));
+                if (a != null && a.getPlayer() != null) {
+                    this.removePlayerFromAllQueues(a.getPlayer().getUniqueId());
+                }
             }
         }
+
         Bukkit.getLogger().info("DEBUG: " + player.getName() + " left all queues.");
         player.sendMessage("§cYou have left the queue.");
         Bukkit.getScheduler().runTaskLater(Partix.getInstance(), this::updateGameSelectorGUI, 5L);
@@ -907,10 +1113,22 @@ public class BasketballLobby
             buttons[i] = new ItemButton(i, FILLER_PANE, p -> {
             });
         }
-        this.registerFramed(buttons, 10, this.icon(Material.IRON_INGOT, Component.text("§l§c⚔ 1v1 Mode"), "§7Face off in a 1v1 duel! (Rewards DISABLED)", " ", "§eQueue: " + this.queue1v1.size() + "/2 players"), p -> this.joinQueue(p, 1));
-        this.registerFramed(buttons, 12, this.icon(Material.GOLD_INGOT, Component.text("§l§6⚔ 2v2 Mode"), "§7Team up for a 2v2 battle!", " ", "§eQueue: " + this.queue2v2.size() + "/4 players"), p -> this.joinQueue(p, 2));
-        this.registerFramed(buttons, 14, this.icon(Material.DIAMOND, Component.text("§l§b⚔ 3v3 Mode"), "§7Join a team-based 3v3 showdown!", " ", "§eQueue: " + this.queue3v3.size() + "/6 players"), p -> this.joinQueue(p, 3));
-        this.registerFramed(buttons, 16, this.icon(Material.EMERALD, Component.text("§l§a⚔ 4v4 Mode"), "§7Join a 4v4 match on a rec court!", " ", "§eQueue: " + this.queue4v4.size() + "/8 players"), p -> this.joinQueue(p, 4));
+        // Only show 1v1 option - 2v2 and 3v3 now use physical spots at courts
+        this.registerFramed(buttons, 13, this.icon(Material.IRON_INGOT, Component.text("§l§c⚔ 1v1 Mode"), "§7Face off in a 1v1 duel!", " ", "§eQueue: " + this.queue1v1.size() + "/2 players"), p -> this.joinQueue(p, 1));
+        
+        // Add info about physical queue spots
+        buttons[11] = new ItemButton(11, this.icon(Material.GOLD_INGOT, Component.text("§l§62v2 Park Queue"), "§7Stand on a spot at a 2v2 court!", "§7Find the courts with colored particles", "§7§oGreen = Occupied, Red = Available"), p -> {
+            p.sendMessage("§a§l» §aHead to the 2v2 courts and stand on a spot!");
+            p.sendMessage("§7Courts are marked with particle effects.");
+            p.closeInventory();
+        });
+        
+        buttons[15] = new ItemButton(15, this.icon(Material.DIAMOND, Component.text("§l§b3v3 Park Queue"), "§7Stand on a spot at a 3v3 court!", "§7Find the courts with colored particles", "§7§oGreen = Occupied, Red = Available"), p -> {
+            p.sendMessage("§a§l» §aHead to the 3v3 courts and stand on a spot!");
+            p.sendMessage("§7Courts are marked with particle effects.");
+            p.closeInventory();
+        });
+        
         Athlete athlete = AthleteManager.get(player.getUniqueId());
         if (this.isPlayerQueued(athlete)) {
             buttons[22] = new ItemButton(22, this.icon(Material.BARRIER, Component.text("§cLeave Queue"), "§7Click to leave the queue"), this::leaveQueue);
@@ -949,31 +1167,169 @@ public class BasketballLobby
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         Player player = event.getPlayer();
-        Athlete athlete = AthleteManager.get(player.getUniqueId());
-        if (athlete != null) {
-            this.leaveQueue(player);
-        }
-        this.playerQueueNotifier.remove(player.getUniqueId());
+        UUID playerId = player.getUniqueId();
+
+        // Remove by UUID instead of Athlete object reference
+        this.removePlayerFromAllQueues(playerId);
+        
+        // Remove from physical queue spots
+        this.removeFromPhysicalQueue(playerId);
+
+        // Clean up notifier
+        this.playerQueueNotifier.remove(playerId);
+
+        // Update GUI for other players
         Bukkit.getScheduler().runTaskLater(Partix.getInstance(), this::updateGameSelectorGUI, 5L);
+    }
+    
+    /**
+     * Handle player sneaking to leave a spot
+     */
+    @EventHandler
+    public void onPlayerSneak(org.bukkit.event.player.PlayerToggleSneakEvent event) {
+        if (!event.isSneaking()) {
+            return; // Only handle when starting to sneak
+        }
+        
+        Player player = event.getPlayer();
+        UUID playerId = player.getUniqueId();
+        
+        CourtSpot currentSpot = playerSpots.get(playerId);
+        if (currentSpot != null) {
+            // Player is on a spot and wants to leave
+            currentSpot.vacate();
+            playerSpots.remove(playerId);
+            
+            // Teleport player 2 blocks west (negative X direction)
+            Location exitLocation = currentSpot.getLocation().clone();
+            exitLocation.setX(exitLocation.getX() - 2.0); // 2 blocks west
+            exitLocation.setY(exitLocation.getY() + 1.0); // 1 block up
+            player.teleport(exitLocation);
+            
+            player.sendMessage("§c§l» §cYou left the queue spot!");
+            player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, SoundCategory.MASTER, 1.0f, 0.5f);
+        }
+    }
+    
+    /**
+     * Prevent queue spot blocks from being broken (allow creative mode)
+     */
+    @EventHandler
+    public void onBlockBreak(org.bukkit.event.block.BlockBreakEvent event) {
+        Player player = event.getPlayer();
+        Location blockLoc = event.getBlock().getLocation();
+        
+        // Allow creative mode players to break blocks
+        if (player.getGameMode() == org.bukkit.GameMode.CREATIVE) {
+            // Check if this is a queue spot block and mark it for re-placement
+            for (CourtQueue court : twosCourts) {
+                for (CourtSpot spot : court.getSpots()) {
+                    if (isSameBlock(spot.getLocation(), blockLoc)) {
+                        // Schedule block replacement after a short delay
+                        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                            spot.updateBlock();
+                        }, 1L);
+                        return;
+                    }
+                }
+            }
+            for (CourtQueue court : threesCourts) {
+                for (CourtSpot spot : court.getSpots()) {
+                    if (isSameBlock(spot.getLocation(), blockLoc)) {
+                        // Schedule block replacement after a short delay
+                        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+                            spot.updateBlock();
+                        }, 1L);
+                        return;
+                    }
+                }
+            }
+            return; // Not a queue spot, allow breaking
+        }
+        
+        // Check if block is a queue spot block and prevent breaking
+        for (CourtQueue court : twosCourts) {
+            for (CourtSpot spot : court.getSpots()) {
+                if (isSameBlock(spot.getLocation(), blockLoc)) {
+                    event.setCancelled(true);
+                    player.sendMessage("§c§l» §cYou can't break queue spot blocks!");
+                    return;
+                }
+            }
+        }
+        for (CourtQueue court : threesCourts) {
+            for (CourtSpot spot : court.getSpots()) {
+                if (isSameBlock(spot.getLocation(), blockLoc)) {
+                    event.setCancelled(true);
+                    player.sendMessage("§c§l» §cYou can't break queue spot blocks!");
+                    return;
+                }
+            }
+        }
+    }
+    
+    /**
+     * Check if two locations refer to the same block
+     */
+    private boolean isSameBlock(Location loc1, Location loc2) {
+        return loc1.getWorld() == loc2.getWorld() &&
+               loc1.getBlockX() == loc2.getBlockX() &&
+               loc1.getBlockY() == loc2.getBlockY() &&
+               loc1.getBlockZ() == loc2.getBlockZ();
+    }
+
+    private void removePlayerFromAllQueues(UUID playerId) {
+        // Remove from all queues by UUID (not by Athlete object)
+        int removed1v1 = this.queue1v1.size();
+        this.queue1v1.removeIf(a -> a == null || a.getPlayer() == null || a.getPlayer().getUniqueId().equals(playerId));
+        removed1v1 -= this.queue1v1.size();
+
+        int removed2v2 = this.queue2v2.size();
+        this.queue2v2.removeIf(a -> a == null || a.getPlayer() == null || a.getPlayer().getUniqueId().equals(playerId));
+        removed2v2 -= this.queue2v2.size();
+
+        int removed3v3 = this.queue3v3.size();
+        this.queue3v3.removeIf(a -> a == null || a.getPlayer() == null || a.getPlayer().getUniqueId().equals(playerId));
+        removed3v3 -= this.queue3v3.size();
+
+        int removed4v4 = this.queue4v4.size();
+        this.queue4v4.removeIf(a -> a == null || a.getPlayer() == null || a.getPlayer().getUniqueId().equals(playerId));
+        removed4v4 -= this.queue4v4.size();
+
+        this.waitingExtras.removeIf(a -> a == null || a.getPlayer() == null || a.getPlayer().getUniqueId().equals(playerId));
+        this.waitingTeams.removeIf(team -> team.getAthletes().stream().anyMatch(a ->
+                a == null || a.getPlayer() == null || a.getPlayer().getUniqueId().equals(playerId)));
+
+        int totalRemoved = removed1v1 + removed2v2 + removed3v3 + removed4v4;
+        if (totalRemoved > 0) {
+            Bukkit.getLogger().info("DEBUG: Removed player " + playerId + " from " + totalRemoved + " queue(s)");
+        }
     }
 
     public boolean isPlayerQueued(Athlete athlete) {
-        if (athlete == null) {
+        if (athlete == null || athlete.getPlayer() == null) {
             return false;
         }
-        this.queue4v4.removeIf(a -> a == null || a.getPlayer() == null);
-        this.queue2v2.removeIf(a -> a == null || a.getPlayer() == null);
-        this.queue3v3.removeIf(a -> a == null || a.getPlayer() == null);
-        this.waitingExtras.removeIf(a -> a == null || a.getPlayer() == null);
-        boolean queued = this.queueContainsUUID(this.queue4v4, athlete.getPlayer().getUniqueId()) ||
-                this.queueContainsUUID(this.queue2v2, athlete.getPlayer().getUniqueId()) ||
-                this.queueContainsUUID(this.queue3v3, athlete.getPlayer().getUniqueId()) ||
-                this.queueContainsUUID(this.queue1v1 , athlete.getPlayer().getUniqueId()) ||
-                this.waitingExtras.stream().anyMatch(a -> a.getPlayer().getUniqueId().equals(athlete.getPlayer().getUniqueId()));
-        Bukkit.getLogger().info("DEBUG: isPlayerQueued for " + athlete.getPlayer().getName() + ": " + queued);
+
+        UUID playerId = athlete.getPlayer().getUniqueId();
+
+        // Clean up null AND offline player entries first
+        this.queue1v1.removeIf(a -> a == null || a.getPlayer() == null || !a.getPlayer().isOnline());
+        this.queue2v2.removeIf(a -> a == null || a.getPlayer() == null || !a.getPlayer().isOnline());
+        this.queue3v3.removeIf(a -> a == null || a.getPlayer() == null || !a.getPlayer().isOnline());
+        this.queue4v4.removeIf(a -> a == null || a.getPlayer() == null || !a.getPlayer().isOnline());
+        this.waitingExtras.removeIf(a -> a == null || a.getPlayer() == null || !a.getPlayer().isOnline());
+
+        // Check by UUID instead of object reference
+        boolean queued = this.queueContainsUUID(this.queue1v1, playerId) ||
+                this.queueContainsUUID(this.queue2v2, playerId) ||
+                this.queueContainsUUID(this.queue3v3, playerId) ||
+                this.queueContainsUUID(this.queue4v4, playerId) ||
+                this.waitingExtras.stream().anyMatch(a ->
+                        a.getPlayer() != null && a.getPlayer().getUniqueId().equals(playerId));
+
         return queued;
     }
-
     private boolean queueContainsUUID(List<Athlete> queue, UUID uuid) {
         return queue.stream().anyMatch(a -> a.getPlayer().getUniqueId().equals(uuid));
     }
@@ -1008,6 +1364,450 @@ public class BasketballLobby
             return 8;
         }
         return 0;
+    }
+
+    // ===== 2K PARK PHYSICAL QUEUE SYSTEM METHODS =====
+    
+    /**
+     * Initialize physical queue spots for 2v2 and 3v3 courts
+     */
+    private void initializePhysicalQueueSpots() {
+        // Allocate 2 courts for 2v2 (first 2 ranked courts)
+        if (rankedCourts.size() >= 4) {
+            twosCourts.add(new CourtQueue(rankedCourts.get(0), CourtQueue.CourtType.TWOS));
+            twosCourts.add(new CourtQueue(rankedCourts.get(1), CourtQueue.CourtType.TWOS));
+            
+            // Allocate 2 courts for 3v3 (last 2 ranked courts)
+            threesCourts.add(new CourtQueue(rankedCourts.get(2), CourtQueue.CourtType.THREES));
+            threesCourts.add(new CourtQueue(rankedCourts.get(3), CourtQueue.CourtType.THREES));
+            
+            Bukkit.getLogger().info("[Park Queue] Initialized 2 courts for 2v2 and 2 courts for 3v3 with physical spots");
+        } else {
+            Bukkit.getLogger().warning("[Park Queue] Not enough ranked courts to initialize physical spots!");
+        }
+    }
+    
+    /**
+     * Start the particle spawning task for all spots
+     */
+    private void startParticleTask() {
+        particleTask = Bukkit.getScheduler().runTaskTimer(Partix.getInstance(), () -> {
+            // Spawn particles for all 2v2 court spots
+            for (CourtQueue court : twosCourts) {
+                court.spawnAllParticles();
+            }
+            
+            // Spawn particles for all 3v3 court spots
+            for (CourtQueue court : threesCourts) {
+                court.spawnAllParticles();
+            }
+        }, 0L, 2L); // Run every 2 ticks (0.1 seconds) for more consistent visual effect
+    }
+    
+    /**
+     * Handle player movement - check if they're entering spots and freeze them on spots
+     */
+    @EventHandler
+    public void onPlayerMove(PlayerMoveEvent event) {
+        Player player = event.getPlayer();
+        UUID playerId = player.getUniqueId();
+        
+        // Check if player moved to a new block (optimization)
+        if (event.getFrom().getBlockX() == event.getTo().getBlockX() &&
+            event.getFrom().getBlockY() == event.getTo().getBlockY() &&
+            event.getFrom().getBlockZ() == event.getTo().getBlockZ()) {
+            return;
+        }
+        
+        // Check if player is currently on a spot
+        CourtSpot currentSpot = playerSpots.get(playerId);
+        
+        if (currentSpot != null) {
+            // Player is on a spot - freeze them if they try to move too far
+            if (!currentSpot.isPlayerInRange(player)) {
+                // Teleport player back to spot center (1 block up)
+                Location spotCenter = currentSpot.getLocation().clone();
+                spotCenter.setY(spotCenter.getY() + 1.0); // Add 1 block height
+                spotCenter.setYaw(player.getLocation().getYaw());
+                spotCenter.setPitch(player.getLocation().getPitch());
+                event.setTo(spotCenter);
+                
+                if (Math.random() < 0.1) { // Only send message 10% of the time to avoid spam
+                    player.sendMessage("§e§l» §eYou're frozen on the spot! §7Shift to leave.");
+                }
+            }
+            return; // Don't check for new spots if already on one
+        }
+        
+        // Player is not on a spot - check if they entered one
+        CourtSpot nearbySpot = findNearbyAvailableSpot(player);
+        if (nearbySpot != null && !nearbySpot.isOccupied()) {
+            // FIX: Prevent players already in a game from stepping on spots
+            Athlete athlete = AthleteManager.get(playerId);
+            if (athlete != null && athlete.getPlace() instanceof BasketballGame) {
+                BasketballGame currentGame = (BasketballGame) athlete.getPlace();
+                // Don't allow joining spot if in an active game (not in FINAL state)
+                if (currentGame.getState() != GoalGame.State.FINAL) {
+                    return;
+                }
+            }
+            
+            // Check if it's a party spot - enforce party requirements
+            if (nearbySpot.getSpotType() == CourtSpot.SpotType.PARTY) {
+                if (!canOccupyPartySpot(player, nearbySpot.getCourt())) {
+                    return; // Player doesn't meet party spot requirements
+                }
+            }
+            
+            if (nearbySpot.tryOccupy(playerId)) {
+                playerSpots.put(playerId, nearbySpot);
+                player.sendMessage("§a§l» §aYou're now on a queue spot! " + getSpotMessage(nearbySpot));
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, SoundCategory.MASTER, 1.0f, 1.5f);
+                
+                // If party leader joins a party spot, automatically add party members to nearby spots
+                handlePartyLeaderJoin(player, nearbySpot);
+                
+                // Check if ready to start game
+                checkAndStartGame(nearbySpot.getCourt());
+            }
+        }
+    }
+    
+    /**
+     * Check if a player can occupy a party spot (must be party leader with correct party size)
+     */
+    private boolean canOccupyPartySpot(Player player, CourtQueue court) {
+        Athlete athlete = AthleteManager.get(player.getUniqueId());
+        if (athlete == null) {
+            player.sendMessage("§c§l» §cParty spots require a party!");
+            return false;
+        }
+        
+        Party party = PartyFactory.get(athlete.getParty());
+        if (party == null) {
+            player.sendMessage("§c§l» §cParty spots require a party!");
+            return false;
+        }
+        
+        // Must be party leader
+        if (!party.leader.equals(player.getUniqueId())) {
+            player.sendMessage("§c§l» §cOnly the party leader can queue the party!");
+            return false;
+        }
+        
+        // Check party size matches court type
+        int partySize = party.toList().size();
+        int requiredSize = court.getPlayersPerTeam();
+        
+        if (partySize != requiredSize) {
+            player.sendMessage("§c§l» §cYou need exactly " + requiredSize + " players in your party for this court!");
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * When a party leader joins a party spot, automatically teleport and place all party members
+     */
+    private void handlePartyLeaderJoin(Player player, CourtSpot leaderSpot) {
+        if (leaderSpot.getSpotType() != CourtSpot.SpotType.PARTY) {
+            return; // Only handle party spots
+        }
+        
+        Athlete athlete = AthleteManager.get(player.getUniqueId());
+        if (athlete == null) {
+            return;
+        }
+        
+        Party party = PartyFactory.get(athlete.getParty());
+        if (party == null || !party.leader.equals(player.getUniqueId())) {
+            return; // Not a party leader
+        }
+        
+        List<Athlete> partyMembers = party.toList();
+        if (partyMembers.size() <= 1) {
+            return; // Solo or just the leader
+        }
+        
+        CourtQueue court = leaderSpot.getCourt();
+        List<CourtSpot> partySpots = court.getSpotsByType(CourtSpot.SpotType.PARTY);
+        
+        // Try to place party members on adjacent party spots
+        int placedMembers = 0;
+        for (Athlete member : partyMembers) {
+            if (member.equals(athlete)) {
+                continue; // Skip the leader (already placed)
+            }
+            
+            Player memberPlayer = member.getPlayer();
+            if (memberPlayer == null || !memberPlayer.isOnline()) {
+                continue;
+            }
+            
+            // Find an empty party spot
+            for (CourtSpot spot : partySpots) {
+                if (!spot.isOccupied()) {
+                    // Teleport party member to the spot (1 block up)
+                    Location spotLoc = spot.getLocation().clone();
+                    spotLoc.setY(spotLoc.getY() + 1.0);
+                    memberPlayer.teleport(spotLoc);
+                    
+                    spot.tryOccupy(memberPlayer.getUniqueId());
+                    playerSpots.put(memberPlayer.getUniqueId(), spot);
+                    memberPlayer.sendMessage("§a§l» §aYour party leader queued you! " + getSpotMessage(spot));
+                    memberPlayer.playSound(memberPlayer.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, SoundCategory.MASTER, 1.0f, 1.5f);
+                    placedMembers++;
+                    break;
+                }
+            }
+        }
+        
+        if (placedMembers > 0) {
+            player.sendMessage("§a§l» §aYour party members have been placed on spots!");
+        }
+    }
+    
+    /**
+     * Find a nearby available spot for a player
+     */
+    private CourtSpot findNearbyAvailableSpot(Player player) {
+        // Check 2v2 courts
+        for (CourtQueue court : twosCourts) {
+            CourtSpot spot = court.getSpotForPlayer(player);
+            if (spot != null && !spot.isOccupied()) {
+                return spot;
+            }
+        }
+        
+        // Check 3v3 courts
+        for (CourtQueue court : threesCourts) {
+            CourtSpot spot = court.getSpotForPlayer(player);
+            if (spot != null && !spot.isOccupied()) {
+                return spot;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Get a descriptive message for what spot the player is on
+     */
+    private String getSpotMessage(CourtSpot spot) {
+        String courtType = spot.getCourt().getPlayersPerTeam() == 2 ? "2v2" : "3v3";
+        String spotType = switch (spot.getSpotType()) {
+            case TEAM1 -> "§eTeam 1";
+            case PARTY -> "§dWaiting/Party";
+            case TEAM2 -> "§bTeam 2";
+        };
+        return "§7(" + courtType + " - " + spotType + "§7)";
+    }
+    
+    /**
+     * Check if a court is ready to start and initiate the game
+     */
+    private void checkAndStartGame(CourtQueue court) {
+        if (!court.isReadyToStart()) {
+            return;
+        }
+        
+        List<Player> team1Players = court.getTeam1Players();
+        List<Player> team2Players = court.getTeam2Players();
+        
+        // Validate all players are still online and available
+        if (team1Players.size() != court.getPlayersPerTeam() || 
+            team2Players.size() != court.getPlayersPerTeam()) {
+            return;
+        }
+        
+        // Convert to Athletes
+        List<Athlete> team1Athletes = team1Players.stream()
+            .map(p -> AthleteManager.get(p.getUniqueId()))
+            .filter(a -> a != null)
+            .collect(java.util.stream.Collectors.toList());
+            
+        List<Athlete> team2Athletes = team2Players.stream()
+            .map(p -> AthleteManager.get(p.getUniqueId()))
+            .filter(a -> a != null)
+            .collect(java.util.stream.Collectors.toList());
+        
+        if (team1Athletes.size() != court.getPlayersPerTeam() || 
+            team2Athletes.size() != court.getPlayersPerTeam()) {
+            return;
+        }
+        
+        // Create the game
+        startPhysicalQueueGame(court, team1Athletes, team2Athletes);
+    }
+    
+    /**
+     * Start a game from the physical queue system
+     */
+    private void startPhysicalQueueGame(CourtQueue courtQueue, List<Athlete> team1, List<Athlete> team2) {
+        // Find or create a game instance for this court
+        BasketballGame game = null;
+        Location courtLoc = courtQueue.getCourtLocation();
+        
+        // Check if there's already a stopped game at this location
+        if (games.containsKey(courtLoc)) {
+            BasketballGame existingGame = games.get(courtLoc);
+            // Check if the game state allows reuse (check for finished state)
+            if (existingGame.getState() == GoalGame.State.FINAL) {
+                games.remove(courtLoc); // Remove old game
+            }
+        }
+        
+        // Create new game with proper parameters
+        Settings settings = gameSettings.copy();
+        settings.playersPerTeam = courtQueue.getPlayersPerTeam();
+        // Court dimensions: 26.0 length, 2.8 Y distance, 0.45 X length, 0.475 Z width, 0.575 Y height
+        game = new BasketballGame(settings, courtLoc, 26.0, 2.8, 0.45, 0.475, 0.575);
+        game.isPhysicalQueueGame = true; // Mark as physical queue game
+        games.put(courtLoc, game);
+        
+        // CRITICAL FIX: Remove all players from spot tracking so they're no longer frozen
+        for (Athlete athlete : team1) {
+            playerSpots.remove(athlete.getPlayer().getUniqueId());
+        }
+        for (Athlete athlete : team2) {
+            playerSpots.remove(athlete.getPlayer().getUniqueId());
+        }
+        
+        // Join players to the game
+        for (Athlete athlete : team1) {
+            game.join(athlete);
+            game.joinTeam(athlete.getPlayer(), GoalGame.Team.HOME);
+        }
+        
+        for (Athlete athlete : team2) {
+            game.join(athlete);
+            game.joinTeam(athlete.getPlayer(), GoalGame.Team.AWAY);
+        }
+        
+        // DON'T clear the court spots yet - keep them for winners to return to
+        // courtQueue.clearAllSpots(); // Commented out
+        
+        // Keep players in tracking so we know which court they came from
+        // We'll handle this in the game end callback
+        
+        // Store the court queue reference for this game so we can handle winner/loser logic
+        gameCourtMapping.put(courtLoc, courtQueue);
+        
+        // Notify players
+        for (Player p : game.getPlayers()) {
+            p.sendMessage("§a§l» §aGame starting! Winners stay on the spot!");
+        }
+        
+        // Start the game
+        game.start();
+        
+        Bukkit.getLogger().info("[Park Queue] Started " + courtQueue.getPlayersPerTeam() + "v" + 
+                               courtQueue.getPlayersPerTeam() + " game from physical queue");
+    }
+    
+    /**
+     * Remove a player from all physical queue spots
+     */
+    private void removeFromPhysicalQueue(UUID playerId) {
+        CourtSpot spot = playerSpots.remove(playerId);
+        if (spot != null) {
+            spot.vacate();
+        }
+        
+        // Also check all courts to be safe
+        for (CourtQueue court : twosCourts) {
+            court.removePlayer(playerId);
+        }
+        for (CourtQueue court : threesCourts) {
+            court.removePlayer(playerId);
+        }
+    }
+    
+    /**
+     * Called when a physical queue game ends - handles winner-stays, loser-leaves logic
+     */
+    public void onPhysicalQueueGameEnd(BasketballGame game, Athlete athlete) {
+        Player player = athlete.getPlayer();
+        Location courtLoc = game.getLocation();
+        
+        // Get the court queue for this game
+        CourtQueue courtQueue = gameCourtMapping.get(courtLoc);
+        if (courtQueue == null) {
+            // Fallback: send to spawn if no court mapping found
+            Location spawn = new Location(courtLoc.getWorld(), 9.5, -61.0, 154.5);
+            player.teleport(spawn);
+            Hub.basketballLobby.join(athlete);
+            return;
+        }
+        
+        // Determine if player is a winner or loser
+        GoalGame.Team winningTeam = game.getHomeScore() > game.getAwayScore() ? 
+            GoalGame.Team.HOME : GoalGame.Team.AWAY;
+        
+        List<Player> homePlayers = game.getHomePlayers();
+        boolean isHome = homePlayers.contains(player);
+        GoalGame.Team playerTeam = isHome ? GoalGame.Team.HOME : GoalGame.Team.AWAY;
+        boolean isWinner = playerTeam == winningTeam;
+        
+        if (isWinner) {
+            // Winner - teleport back to spot
+            List<CourtSpot> winnerSpots = winningTeam == GoalGame.Team.HOME ? 
+                courtQueue.getSpotsByType(CourtSpot.SpotType.TEAM1) : 
+                courtQueue.getSpotsByType(CourtSpot.SpotType.TEAM2);
+            
+            // Find first available winner spot
+            CourtSpot targetSpot = null;
+            for (CourtSpot spot : winnerSpots) {
+                if (!spot.isOccupied() || spot.getOccupiedBy().equals(player.getUniqueId())) {
+                    targetSpot = spot;
+                    break;
+                }
+            }
+            
+            if (targetSpot != null) {
+                targetSpot.vacate();
+                targetSpot.tryOccupy(player.getUniqueId());
+                playerSpots.put(player.getUniqueId(), targetSpot);
+                
+                // Teleport to spot
+                Location spotLoc = targetSpot.getLocation().clone();
+                spotLoc.setY(spotLoc.getY() + 1.0);
+                player.teleport(spotLoc);
+                player.sendMessage("§a§l» §aYou won! Back on the spot - defend your court!");
+                Hub.basketballLobby.join(athlete);
+            } else {
+                // No spot available, send to spawn
+                Location spawn = new Location(courtLoc.getWorld(), 9.5, -61.0, 154.5);
+                player.teleport(spawn);
+                player.sendMessage("§a§l» §aYou won!");
+                Hub.basketballLobby.join(athlete);
+            }
+        } else {
+            // Loser - teleport to spawn area
+            Location loserSpawn = new Location(courtLoc.getWorld(), 9.5, -61.0, 154.5);
+            player.teleport(loserSpawn);
+            player.sendMessage("§c§l» §cYou lost! Better luck next time.");
+            playerSpots.remove(player.getUniqueId());
+            Hub.basketballLobby.join(athlete);
+        }
+        
+        // Clear loser spots if this is the last player being processed
+        // This will be handled by checking if game has no more players
+        Bukkit.getScheduler().runTaskLater(Partix.getInstance(), () -> {
+            if (game.getPlayers().isEmpty()) {
+                List<CourtSpot> loserSpots = winningTeam == GoalGame.Team.HOME ? 
+                    courtQueue.getSpotsByType(CourtSpot.SpotType.TEAM2) : 
+                    courtQueue.getSpotsByType(CourtSpot.SpotType.TEAM1);
+                for (CourtSpot spot : loserSpots) {
+                    if (!playerSpots.containsValue(spot)) {
+                        spot.vacate();
+                    }
+                }
+                gameCourtMapping.remove(courtLoc);
+                Bukkit.getLogger().info("[Park Queue] Game ended - winners stay, losers kicked");
+            }
+        }, 5L);
     }
 
     @Getter

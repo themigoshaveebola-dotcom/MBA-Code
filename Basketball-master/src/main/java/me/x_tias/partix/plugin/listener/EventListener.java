@@ -22,6 +22,7 @@ import me.x_tias.partix.plugin.athlete.AthleteManager;
 import me.x_tias.partix.plugin.ball.Ball;
 import me.x_tias.partix.plugin.ball.BallFactory;
 import me.x_tias.partix.plugin.ball.event.*;
+import me.x_tias.partix.plugin.ball.types.Basketball;
 import me.x_tias.partix.plugin.cooldown.Cooldown;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -32,6 +33,7 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
+import org.bukkit.event.vehicle.VehicleExitEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.util.Vector;
 
@@ -135,6 +137,25 @@ public class EventListener
         }
         Partix.getInstance().getServer().getPluginManager().callEvent(new PressSwapKeyEvent(player, e.getMainHandItem()));
         e.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onVehicleExit(VehicleExitEvent e) {
+        // Prevent players from dismounting during ankle breaker/posterizer animations
+        if (!(e.getExited() instanceof Player player)) {
+            return;
+        }
+
+        // Check all nearby basketballs to see if this player is locked in a sitting animation
+        for (Ball ball : BallFactory.getNearby(player.getLocation(), 50.0)) {
+            if (!(ball instanceof Basketball basketball)) continue;
+
+            // Check if player is locked in sitting animation
+            if (basketball.isPlayerInSittingAnimation(player)) {
+                e.setCancelled(true);
+                return;
+            }
+        }
     }
 }
 

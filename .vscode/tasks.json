@@ -1,0 +1,26 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Basketball",
+			"type": "shell",
+			"command": "cd Basketball-master; .\\gradlew.bat build",
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Clean and Build Basketball",
+			"type": "shell",
+			"command": "cd Basketball-master; .\\gradlew.bat clean build",
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Clean Basketball",
+			"type": "shell",
+			"command": "cd Basketball-master; .\\gradlew.bat clean",
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

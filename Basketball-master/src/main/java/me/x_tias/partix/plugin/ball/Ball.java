@@ -185,7 +185,7 @@ public abstract class Ball {
             currentDamager = player;
 
             player.getInventory().setHeldItemSlot(0);
-            player.getInventory().setItem(0, Items.get(Component.text("play.partix.net").color(Colour.partix()), Material.POLISHED_BLACKSTONE_BUTTON));
+            player.getInventory().setItem(0, Items.get(Component.text("Minecraft Basketball").color(Colour.partix()), Material.POLISHED_BLACKSTONE_BUTTON));
         }
     }
 

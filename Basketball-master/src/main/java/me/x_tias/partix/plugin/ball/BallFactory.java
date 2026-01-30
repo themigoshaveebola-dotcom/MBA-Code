@@ -72,7 +72,7 @@ public class BallFactory {
     public static boolean hasBall(Player player) {
         for (Ball ball : BallFactory.getNearby(player.getLocation(), 3.0)) {
             if (ball.getCurrentDamager() == null || !ball.getCurrentDamager().equals(player)) continue;
-            player.getInventory().setItem(0, Items.get(Component.text("play.partix.net").color(Colour.partix()), Material.POLISHED_BLACKSTONE_BUTTON));
+            player.getInventory().setItem(0, Items.get(Component.text("Minecraft Basketball").color(Colour.partix()), Material.POLISHED_BLACKSTONE_BUTTON));
             return true;
         }
         return false;

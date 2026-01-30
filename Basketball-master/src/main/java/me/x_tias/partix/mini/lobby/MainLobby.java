@@ -38,6 +38,7 @@ import me.x_tias.partix.mini.game.GoalGame;
 import me.x_tias.partix.plugin.athlete.Athlete;
 import me.x_tias.partix.plugin.athlete.AthleteManager;
 import me.x_tias.partix.plugin.cosmetics.*;
+import me.x_tias.partix.plugin.ball.event.PressRightClickEvent;
 import me.x_tias.partix.plugin.gui.GUI;
 import me.x_tias.partix.plugin.gui.ItemButton;
 import me.x_tias.partix.plugin.party.Party;
@@ -64,16 +65,18 @@ import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scoreboard.Team;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.UUID;
+import org.bukkit.event.Listener;
 
 
 public class MainLobby
-        extends Lobby {
+        extends Lobby implements Listener {
     public static final ItemStack FILLER = Items.get(Component.text(" "), Material.BLACK_STAINED_GLASS_PANE, 1, " ");
     private final HashMap<Location, BasketballGame> games = new HashMap<>();
     private final Settings customSettings = new Settings(WinType.TIME_5, GameType.MANUAL, WaitType.MEDIUM, CompType.CASUAL, 2, false, false, false, 4, GameEffectType.NONE);
@@ -92,9 +95,9 @@ public class MainLobby
             this.i = 0;
         }
         if (this.i < 150) {
-            this.updateBossBar("§6§lMinecraft Basketball Association §7§l> §f§lSeason 3");
+            this.updateBossBar("§b§lMinecraft Basketball Association §7§l> §f§lSeason 0");
         } else {
-            this.updateBossBar("§e§lSUPPORT THE SERVER! §7§l> §f§lhttps:/minecraftbasketball.tebex.io/");
+            this.updateBossBar("§b§lSUPPORT THE SERVER! §7§l> §f§l");
         }
     }
 
@@ -108,8 +111,15 @@ public class MainLobby
             int pts = SeasonDb.get(player.getUniqueId(), SeasonDb.Stat.POINTS).join();
             String div = pts >= 50000 ? "§6Gold" : "§7Silver";
             String points = String.valueOf(pts - (pts >= 50000 ? 50000 : 0));
+            
+            // Get season pass info
+            int tier = PlayerDb.get(player.getUniqueId(), PlayerDb.Stat.SEASON_PASS_TIER).join();
+            int exp = PlayerDb.get(player.getUniqueId(), PlayerDb.Stat.SEASON_PASS_EXP).join();
+            int expInTier = exp % 1000; // Get current exp in tier (out of 1000)
+            String seasonPassProgress = "§6" + tier + " §7(" + expInTier + "/1000)";
+            
             Bukkit.getScheduler().runTask(Partix.getInstance(), () ->
-                    Sidebar.set(player, Component.text("  MBA  ").color(Colour.partix()).decorate(TextDecoration.BOLD), " ", "§6§lYour Info  ", "  §fName: §e" + player.getName(), "  §fRank: " + rankPrefix, "  §fVer: " + (player.getName().startsWith(".") ? "§eBedrock" : "§eJava"), "     ", "§6§lYour Stats  ", "  §fCoins: §e" + coins, "  §fMBA Bucks: §e" + mbaBucks, "        ", "§6§lThis Season  ", "  §fDiv: §e" + div, "  §fPts: §e" + points, "                     ", "§7§.")
+                    Sidebar.set(player, Component.text("\uF808\uF808〩"), "                     ", "     ", " ", " ", "§c§lYour Info  ", "  §fName: §b" + player.getName(), "  §fRank: " + rankPrefix, "  §fVer: §b" + (player.getName().startsWith(".") ? "Bedrock" : "Java"), "     ", "§f§lYour Stats  ", "  §fCoins: §e" + coins, "  §fMBA Bucks: §a" + mbaBucks, "  §fPass: " + seasonPassProgress, "        ", "§9§lThis Season  ", "  §fDiv: §e" + div, "  §fPts: §a" + points, "                     ", "§7§.")
             );
         });
     }
@@ -148,20 +158,30 @@ public class MainLobby
     public void giveItems(Player player) {
         PlayerInventory i = player.getInventory();
         i.setItem(0, Items.get(Message.itemName("Server Selector", "key.use", player), Material.NETHER_STAR));
-        i.setItem(8, Items.get(Message.itemName("Prediction Book", "key.use", player), Material.BOOK));
+        i.setItem(1, Items.get(Component.text("§6§lSeason Pass").append(Component.newline()).append(Component.text("§7Click to view rewards")), Material.ENCHANTED_BOOK));
     }
 
     @EventHandler
-    public void onPlayerInteract(PlayerInteractEvent event) {
+    public void onRightClick(PressRightClickEvent event) {
         Player player = event.getPlayer();
-        ItemStack item = player.getInventory().getItemInMainHand();
-        if (item.getType() == Material.BOOK && event.getAction().toString().contains("RIGHT_CLICK")) {
-            BettingManager.openGameSelectionGUI(player);
+        ItemStack item = event.getItemStack();
+        
+        if (item == null || item.getType() == Material.AIR) {
+            return;
+        }
+        
+        Bukkit.getLogger().info("[DEBUG] MainLobby right click: " + item.getType());
+        
+        if (item.getType() == Material.ENCHANTED_BOOK) {
+            Bukkit.getLogger().info("[DEBUG] Opening Season Pass GUI for " + player.getName());
+            me.x_tias.partix.plugin.seasonpass.SeasonPassManager.openSeasonPassGUI(player);
         }
     }
     public void openPlayerProfileGUI(Player player) {
-        UUID playerUUID = player.getUniqueId();
+        openPlayerProfileGUIForTarget(player, player.getUniqueId());
+    }
 
+    public void openPlayerProfileGUIForTarget(Player viewer, UUID targetUUID) {
         ItemButton[] buttons = new ItemButton[27];
         for (int i = 0; i < 27; ++i) {
             buttons[i] = new ItemButton(i, FILLER, p -> {});
@@ -172,24 +192,24 @@ public class MainLobby
                 Component.text("Career Record").color(Colour.partix()),
                 Material.DIAMOND_SWORD,
                 1,
-                "§7View your ranked record"
-        ), p -> this.openCareerRecordGUI(p, playerUUID));
+                "§7View ranked record"
+        ), p -> this.openCareerRecordGUI(p, targetUUID));
 
         // Career Statistics
         buttons[11] = new ItemButton(11, Items.get(
                 Component.text("Career Statistics").color(Colour.partix()),
                 Material.BOOK,
                 1,
-                "§7View your total career stats"
-        ), p -> this.openCareerStatsGUI(p, playerUUID));
+                "§7View total career stats"
+        ), p -> this.openCareerStatsGUI(p, targetUUID));
 
         // Career Averages
         buttons[12] = new ItemButton(12, Items.get(
                 Component.text("Career Averages").color(Colour.partix()),
                 Material.GOLDEN_APPLE,
                 1,
-                "§7View your stats per game"
-        ), p -> this.openCareerAveragesGUI(p, playerUUID));
+                "§7View stats per game"
+        ), p -> this.openCareerAveragesGUI(p, targetUUID));
 
         // Current Season Stats
         buttons[14] = new ItemButton(14, Items.get(
@@ -197,7 +217,7 @@ public class MainLobby
                 Material.EMERALD,
                 1,
                 "§7View Season 1 statistics"
-        ), p -> this.openSpecificSeasonStatsGUI(p, playerUUID, 1));
+        ), p -> this.openSpecificSeasonStatsGUI(p, targetUUID, 1));
 
         // Current Season Record
         buttons[15] = new ItemButton(15, Items.get(
@@ -205,17 +225,17 @@ public class MainLobby
                 Material.IRON_SWORD,
                 1,
                 "§7View Season 1 record"
-        ), p -> this.openSpecificSeasonRecordGUI(p, playerUUID, 1));
+        ), p -> this.openSpecificSeasonRecordGUI(p, targetUUID, 1));
 
-        // Championships
+        // Accolades (Championships & Achievements)
         buttons[16] = new ItemButton(16, Items.get(
-                Component.text("Championships").color(Colour.partix()),
+                Component.text("Accolades").color(Colour.partix()),
                 Material.GOLD_BLOCK,
                 1,
-                "§7View your championships"
-        ), p -> this.openChampionshipsGUI(p, playerUUID));
+                "§7View your rings & accolades"
+        ), p -> this.openAccoladesGUI(p, targetUUID));
 
-        new GUI("§l§6Player Profile", 3, false, buttons).openInventory(player);
+        new GUI("§l§6Player Profile", 3, false, buttons).openInventory(viewer);
     }
 
     private void openCareerRecordGUI(Player player, UUID playerUUID) {
@@ -225,16 +245,28 @@ public class MainLobby
         CompletableFuture<Integer> winsF = PlayerDb.get(playerUUID, PlayerDb.Stat.CAREER_WINS);
         CompletableFuture<Integer> lossesF = PlayerDb.get(playerUUID, PlayerDb.Stat.CAREER_LOSSES);
         CompletableFuture<Integer> gamesF = PlayerDb.get(playerUUID, PlayerDb.Stat.CAREER_GAMES_PLAYED);
+        CompletableFuture<Integer> recWinsF = PlayerDb.get(playerUUID, PlayerDb.Stat.REC_WINS);
+        CompletableFuture<Integer> recLossesF = PlayerDb.get(playerUUID, PlayerDb.Stat.REC_LOSSES);
+        CompletableFuture<Integer> recGamesF = PlayerDb.get(playerUUID, PlayerDb.Stat.REC_GAMES);
 
         // Wait for ALL to complete, THEN build GUI on main thread
-        CompletableFuture.allOf(winsF, lossesF, gamesF).thenAccept(v -> {
+        CompletableFuture.allOf(winsF, lossesF, gamesF, recWinsF, recLossesF, recGamesF).thenAccept(v -> {
             int careerWins = winsF.join();
             int careerLosses = lossesF.join();
             int gamesPlayed = gamesF.join();
+            int recWins = recWinsF.join();
+            int recLosses = recLossesF.join();
+            int recGames = recGamesF.join();
             double winRate = gamesPlayed > 0 ? ((double) careerWins / gamesPlayed) * 100 : 0;
 
             // Build GUI on main thread
             Bukkit.getScheduler().runTask(Partix.getInstance(), () -> {
+                // Get target player name
+                OfflinePlayer target = Bukkit.getOfflinePlayer(playerUUID);
+                String targetName = target.getName() != null ? target.getName() : "Unknown";
+                boolean isSelf = player.getUniqueId().equals(playerUUID);
+                String possessive = isSelf ? "Your" : targetName + "'s";
+
                 ItemButton[] buttons = new ItemButton[27];
                 for (int i = 0; i < 27; ++i) {
                     buttons[i] = new ItemButton(i, FILLER, p -> {});
@@ -243,25 +275,28 @@ public class MainLobby
                 buttons[11] = new ItemButton(11, Items.get(
                         Component.text("Wins: " + careerWins).color(Colour.allow()),
                         Material.LIME_CONCRETE, 1,
-                        "§7Your total ranked wins"
+                        "§a§oWins:",
+                        "§a§o  Rec Wins: " + recWins
                 ), p -> {});
 
                 buttons[13] = new ItemButton(13, Items.get(
                         Component.text("Losses: " + careerLosses).color(Colour.deny()),
                         Material.RED_CONCRETE, 1,
-                        "§7Your total ranked losses"
+                        "§c§oLosses:",
+                        "§c§o  Rec Losses: " + recLosses
                 ), p -> {});
 
                 buttons[15] = new ItemButton(15, Items.get(
                         Component.text("Games: " + gamesPlayed).color(Colour.partix()),
                         Material.GOLD_BLOCK, 1,
-                        "§7Total games played"
+                        "§6§oGames Played:",
+                        "§6§o  Rec Games: " + recGames
                 ), p -> {});
 
                 buttons[22] = new ItemButton(22, Items.get(
                         Component.text("Win Rate: " + String.format("%.1f", winRate) + "%").color(Colour.partix()),
                         Material.GOLDEN_APPLE, 1,
-                        "§7Your win percentage"
+                        "§7" + possessive + " win percentage"
                 ), p -> {});
 
                 buttons[26] = new ItemButton(26, Items.get(
@@ -580,12 +615,18 @@ public class MainLobby
         CompletableFuture<Integer> winsF = PlayerDb.get(playerUUID, PlayerDb.Stat.valueOf("SEASON_" + season + "_WINS"));
         CompletableFuture<Integer> lossesF = PlayerDb.get(playerUUID, PlayerDb.Stat.valueOf("SEASON_" + season + "_LOSSES"));
         CompletableFuture<Integer> gamesF = PlayerDb.get(playerUUID, PlayerDb.Stat.valueOf("SEASON_" + season + "_GAMES_PLAYED"));
+        CompletableFuture<Integer> recWinsF = PlayerDb.get(playerUUID, PlayerDb.Stat.REC_WINS);
+        CompletableFuture<Integer> recLossesF = PlayerDb.get(playerUUID, PlayerDb.Stat.REC_LOSSES);
+        CompletableFuture<Integer> recGamesF = PlayerDb.get(playerUUID, PlayerDb.Stat.REC_GAMES);
 
         // Wait for ALL to complete
-        CompletableFuture.allOf(winsF, lossesF, gamesF).thenAccept(v -> {
+        CompletableFuture.allOf(winsF, lossesF, gamesF, recWinsF, recLossesF, recGamesF).thenAccept(v -> {
             int wins = winsF.join();
             int losses = lossesF.join();
             int gamesPlayed = gamesF.join();
+            int recWins = recWinsF.join();
+            int recLosses = recLossesF.join();
+            int recGames = recGamesF.join();
             double winRate = gamesPlayed > 0 ? ((double) wins / gamesPlayed) * 100 : 0;
 
             Bukkit.getScheduler().runTask(Partix.getInstance(), () -> {
@@ -596,17 +637,23 @@ public class MainLobby
 
                 buttons[11] = new ItemButton(11, Items.get(
                         Component.text("Wins: " + wins).color(Colour.allow()),
-                        Material.LIME_CONCRETE, 1
+                        Material.LIME_CONCRETE, 1,
+                        "§a§oWins:",
+                        "§a§o  Rec Wins: " + recWins
                 ), p -> {});
 
                 buttons[13] = new ItemButton(13, Items.get(
                         Component.text("Losses: " + losses).color(Colour.deny()),
-                        Material.RED_CONCRETE, 1
+                        Material.RED_CONCRETE, 1,
+                        "§c§oLosses:",
+                        "§c§o  Rec Losses: " + recLosses
                 ), p -> {});
 
                 buttons[15] = new ItemButton(15, Items.get(
                         Component.text("Games: " + gamesPlayed).color(Colour.partix()),
-                        Material.GOLD_BLOCK, 1
+                        Material.GOLD_BLOCK, 1,
+                        "§6§oGames Played:",
+                        "§6§o  Rec Games: " + recGames
                 ), p -> {});
 
                 buttons[22] = new ItemButton(22, Items.get(
@@ -778,27 +825,88 @@ public class MainLobby
         });
     }
 
-    private void openChampionshipsGUI(Player player, UUID playerUUID) {
-        player.sendMessage("§eLoading championships...");
+    private void openAccoladesGUI(Player player, UUID playerUUID) {
+        player.sendMessage("§eLoading accolades...");
 
         PlayerDb.get(playerUUID, PlayerDb.Stat.CHAMPIONSHIPS).thenAccept(championships -> {
-            Bukkit.getScheduler().runTask(Partix.getInstance(), () -> {
-                ItemButton[] buttons = new ItemButton[27];
-                for (int i = 0; i < 27; ++i) {
-                    buttons[i] = new ItemButton(i, FILLER, p -> {});
-                }
+            PlayerDb.getString(playerUUID, PlayerDb.Stat.CHAMPIONSHIP_RINGS).thenAccept(ringsJson -> {
+                PlayerDb.getString(playerUUID, PlayerDb.Stat.ACCOLADES).thenAccept(accoladesJson -> {
+                    Bukkit.getScheduler().runTask(Partix.getInstance(), () -> {
+                        ItemButton[] buttons = new ItemButton[27];
+                        for (int i = 0; i < 27; ++i) {
+                            buttons[i] = new ItemButton(i, FILLER, p -> {});
+                        }
 
-                buttons[13] = new ItemButton(13, Items.get(
-                        Component.text("Championships: " + championships).color(Colour.partix()),
-                        Material.GOLD_BLOCK, 1
-                ), p -> {});
+                        // Parse ring names
+                        List<String> ringNames = new ArrayList<>();
+                        if (ringsJson != null && !ringsJson.isEmpty() && !ringsJson.equals("{}")) {
+                            try {
+                                com.google.gson.Gson gson = new com.google.gson.Gson();
+                                java.lang.reflect.Type listType = new com.google.gson.reflect.TypeToken<List<String>>(){}.getType();
+                                List<String> parsed = gson.fromJson(ringsJson, listType);
+                                if (parsed != null) {
+                                    ringNames = parsed;
+                                }
+                            } catch (Exception e) {
+                                // Ignore parsing errors
+                            }
+                        }
 
-                buttons[26] = new ItemButton(26, Items.get(
-                        Component.text("Back").color(Colour.partix()),
-                        Material.ARROW
-                ), p -> this.openPlayerProfileGUI(p));
+                        // Parse accolades
+                        List<String> accoladesList = new ArrayList<>();
+                        if (accoladesJson != null && !accoladesJson.isEmpty() && !accoladesJson.equals("{}")) {
+                            try {
+                                com.google.gson.Gson gson = new com.google.gson.Gson();
+                                java.lang.reflect.Type listType = new com.google.gson.reflect.TypeToken<List<String>>(){}.getType();
+                                List<String> parsed = gson.fromJson(accoladesJson, listType);
+                                if (parsed != null) {
+                                    accoladesList = parsed;
+                                }
+                            } catch (Exception e) {
+                                // Ignore parsing errors
+                            }
+                        }
 
-                new GUI("§l§6Championships", 3, false, buttons).openInventory(player);
+                        // Championship Rings button (left side)
+                        List<String> ringsLore = new ArrayList<>();
+                        ringsLore.add("§7Championship rings won");
+                        if (!ringNames.isEmpty()) {
+                            ringsLore.add("§r");
+                            for (String ringName : ringNames) {
+                                ringsLore.add("§e" + ringName);
+                            }
+                        }
+
+                        buttons[11] = new ItemButton(11, Items.get(
+                                Component.text("Championship Rings: " + championships).color(Colour.partix()),
+                                Material.GOLD_BLOCK, 1,
+                                ringsLore.toArray(new String[0])
+                        ), p -> {});
+
+                        // Accolades button (right side)
+                        List<String> accoladesLore = new ArrayList<>();
+                        accoladesLore.add("§7Special achievements & honors");
+                        if (!accoladesList.isEmpty()) {
+                            accoladesLore.add("§r");
+                            for (String accolade : accoladesList) {
+                                accoladesLore.add("§b" + accolade);
+                            }
+                        }
+
+                        buttons[15] = new ItemButton(15, Items.get(
+                                Component.text("Accolades: " + accoladesList.size()).color(Colour.partix()),
+                                Material.DIAMOND, 1,
+                                accoladesLore.toArray(new String[0])
+                        ), p -> {});
+
+                        buttons[26] = new ItemButton(26, Items.get(
+                                Component.text("Back").color(Colour.partix()),
+                                Material.ARROW
+                        ), p -> this.openPlayerProfileGUI(p));
+
+                        new GUI("§l§6Accolades", 3, false, buttons).openInventory(player);
+                    });
+                });
             });
         });
     }
@@ -811,10 +919,18 @@ public class MainLobby
             buttons[i] = new ItemButton(i, FILLER, p -> {
             });
         }
-        ItemStack rankedIcon = Items.get(Component.text("Ranked Queue").color(Colour.partix()), Material.DIAMOND_SWORD, 1, "§7Join the Ranked Queue");
+        ItemStack rankedIcon = Items.get(Component.text("Park Queue").color(Colour.partix()), Material.DIAMOND_SWORD, 1, "§7Join the Park Queue");
         rankedIcon.editMeta(m -> m.addItemFlags(ItemFlag.HIDE_ATTRIBUTES));
         this.registerFramed(buttons, 10, rankedIcon, p -> Hub.basketballLobby.openGameSelectorGUI(p));
-        this.registerFramed(buttons, 13, this.createIcon(Material.SLIME_BALL, Component.text("Custom Games").color(Colour.partix()), "§7Select a custom game"), this::openCustomGamesGUI);
+        
+        // Add Rec Center button
+        ItemStack recIcon = Items.get(Component.text("Rec Center").color(Colour.partix()), Material.DIAMOND, 1, "§74 Quarter Games (4 min each)", "§7Bigger rewards!", "§73v3 matches only");
+        this.registerFramed(buttons, 12, recIcon, p -> {
+            Athlete athlete = AthleteManager.get(p.getUniqueId());
+            Hub.recLobby.join(athlete);
+        });
+        
+        this.registerFramed(buttons, 14, this.createIcon(Material.SLIME_BALL, Component.text("Custom Games").color(Colour.partix()), "§7Select a custom game"), this::openCustomGamesGUI);
         ItemStack profileHead = new ItemStack(Material.PLAYER_HEAD);
         profileHead.editMeta(meta -> {
             SkullMeta sm = (SkullMeta) meta;
@@ -823,7 +939,7 @@ public class MainLobby
             sm.lore(List.of(Component.text("§7View your stats & settings")));
         });
         this.registerFramed(buttons, 16, profileHead, p -> this.openPlayerProfileGUI(p));
-        this.registerFramed(buttons, 37, this.createIcon(Material.WRITABLE_BOOK, Component.text("Discord").color(Colour.partix()), "§7Get our Discord link"), p -> p.sendMessage("§aJoin our Discord: §https://discord.gg/znQBMgWkr4"));
+        this.registerFramed(buttons, 37, this.createIcon(Material.WRITABLE_BOOK, Component.text("Discord").color(Colour.partix()), "§7Get our Discord link"), p -> p.sendMessage("§aJoin our Discord: §https://discord.gg/yra3gjNRpD"));
         this.registerFramed(buttons, 40, this.createIcon(Material.EMERALD, Component.text("Server Store").color(Colour.partix()), "§7Visit our Store"), p -> p.sendMessage("§aVisit our Store: §Coming Soon!"));
         this.registerFramed(buttons, 43, this.createIcon(Material.FIREWORK_STAR, Component.text("Cosmetics").color(Colour.partix()), "§7Open Cosmetics Menu"), p -> new CosmeticGUI(p));
         new GUI("Server Selector", 6, false, buttons).openInventory(player);
@@ -850,8 +966,7 @@ public class MainLobby
         int rows = 6;
         ItemButton[] buttons = new ItemButton[54];
         for (slot = 0; slot < buttons.length; ++slot) {
-            buttons[slot] = new ItemButton(slot, FILLER, p -> {
-            });
+            buttons[slot] = new ItemButton(slot, FILLER, p -> {});
         }
         for (slot = 0; slot < Math.min(45, games.size()); ++slot) {
             BasketballGame g2 = games.get(slot);
@@ -861,17 +976,22 @@ public class MainLobby
                 g2.joinTeam(pl, GoalGame.Team.SPECTATOR);
             });
         }
-        buttons[47] = new ItemButton(47, Items.get(Component.text("Create MyCourt").color(Colour.partix()), Material.EMERALD, 1, " ", "§6Requires: §aVIP Rank", "§6§lCLICK TO CREATE!"), pla -> {
-            if (!pla.hasPermission("rank.vip")) {
-                pla.sendMessage("§cYou must be VIP to create a MyCourt!");
-                pla.playSound(pla.getLocation(), Sound.ENTITY_VILLAGER_NO, SoundCategory.MASTER, 1.0f, 1.0f);
-                return;
-            }
+
+        // ✅ REMOVED VIP REQUIREMENT - MyCourts now FREE for everyone!
+        buttons[47] = new ItemButton(47, Items.get(
+                Component.text("Create MyCourt").color(Colour.partix()),
+                Material.EMERALD, 1,
+                " ",
+                "§a§lFREE for everyone!",
+                "§6§lCLICK TO CREATE!"
+        ), pla -> {
+            // Check if player already has a game
             if (games.stream().anyMatch(g -> g.owner != null && g.owner.equals(pla.getUniqueId()))) {
                 pla.playSound(pla.getLocation(), Sound.ENTITY_ARMOR_STAND_BREAK, SoundCategory.MASTER, 100.0f, 1.0f);
                 pla.sendMessage(Message.alreadyCreatedGame());
                 return;
             }
+
             this.attemptJoin(AthleteManager.get(pla.getUniqueId()), athletes -> {
                 BasketballGame g = Hub.basketballLobby.findAvailableGame(true);
                 if (g == null) {
@@ -886,23 +1006,43 @@ public class MainLobby
                 pla.sendMessage(sound != null ? "§aGreen Sound in use: " + sound.getName() : "§cNo Green Sound equipped! Using default.");
             });
         });
-        buttons[49] = new ItemButton(49, Items.get(Component.text("Create Court").color(Colour.partix()), Material.ENDER_EYE, 1, " ", "§6§lFREE for everyone!", "§6§lCLICK TO CREATE!"), pla -> {
+
+        buttons[49] = new ItemButton(49, Items.get(
+                Component.text("Create Court").color(Colour.partix()),
+                Material.ENDER_EYE, 1,
+                " ",
+                "§6§lFREE for everyone!",
+                "§6§lCLICK TO CREATE!"
+        ), pla -> {
             ItemButton[] sizeBtns = new ItemButton[27];
             for (int i = 0; i < sizeBtns.length; ++i) {
-                sizeBtns[i] = new ItemButton(i, Items.get(Component.text(" "), Material.BLACK_STAINED_GLASS_PANE, 1, " "), p -> {
-                });
+                sizeBtns[i] = new ItemButton(i, Items.get(Component.text(" "), Material.BLACK_STAINED_GLASS_PANE, 1, " "), p -> {});
             }
-            sizeBtns[11] = new ItemButton(11, Items.get(Component.text("3v3 Arena").color(Colour.partix()), Material.SLIME_BALL, 1, "§7Create a 3v3 Arena"), click -> {
+            sizeBtns[11] = new ItemButton(11, Items.get(
+                    Component.text("3v3 Arena").color(Colour.partix()),
+                    Material.SLIME_BALL, 1,
+                    "§7Create a 3v3 Arena"
+            ), click -> {
                 Hub.basketballLobby.createRandomDefaultArenaGame(pla);
                 pla.closeInventory();
             });
-            sizeBtns[15] = new ItemButton(15, Items.get(Component.text("4v4 Arena").color(Colour.partix()), Material.SLIME_BALL, 1, "§7Create a 4v4 Arena"), click -> {
+            sizeBtns[15] = new ItemButton(15, Items.get(
+                    Component.text("4v4 Arena").color(Colour.partix()),
+                    Material.SLIME_BALL, 1,
+                    "§7Create a 4v4 Arena"
+            ), click -> {
                 Hub.basketballLobby.createRandomDefaultArenaGame4v4(pla);
                 pla.closeInventory();
             });
             new GUI("Choose Arena Size", 3, false, sizeBtns).openInventory(pla);
         });
-        buttons[51] = new ItemButton(51, Items.get(Component.text("Arena Selector").color(Colour.partix()), Material.DIAMOND, 1, "§7Browse stadium folders"), pla -> Hub.basketballLobby.openArenaCategorySelectorGUI(pla));
+
+        buttons[51] = new ItemButton(51, Items.get(
+                Component.text("Arena Selector").color(Colour.partix()),
+                Material.DIAMOND, 1,
+                "§7Browse stadium folders"
+        ), pla -> Hub.basketballLobby.openArenaCategorySelectorGUI(pla));
+
         new GUI("Custom Games > Basketball", 6, false, buttons).openInventory(player);
     }
 
@@ -940,55 +1080,86 @@ public class MainLobby
             }), new ItemButton(13, Items.get(Component.text("Click").color(Colour.partix()), Material.BARRIER), p -> p.sendMessage("Coming soon")), new ItemButton(15, Items.get(Component.text("Coming Soon").color(Colour.partix()), Material.BARRIER), p -> p.sendMessage("Coming soon"))).openInventory(player);
         }
         if (itemStack.getType().equals(Material.BEACON)) {
-            new GUI("Custom Games > Select Type", 3, true, new ItemButton(11, Items.get(Component.text("Basketball").color(Colour.partix()), Material.SLIME_BALL), p -> {
-                List<BasketballGame> games = Hub.basketballLobby.getGames().stream().filter(g -> g.owner != null).toList();
-                ItemButton[] buttons = new ItemButton[49];
-                if (!games.isEmpty()) {
-                    for (int x = 0; x < 45; ++x) {
-                        if (x >= games.size()) continue;
-                        BasketballGame g2 = games.get(x);
-                        buttons[x] = new ItemButton(x, Items.getPlayerHead(g2.owner), pl -> {
-                            Athlete gameAthlete = AthleteManager.get(pl.getUniqueId());
-                            g2.join(gameAthlete);
-                            g2.joinTeam(pl, GoalGame.Team.SPECTATOR);
-                        });
-                    }
-                }
-                int normalCost = Hub.basketballLobby.getGames().size() > 2 ? 999999999 : 0;
-                buttons[46] = new ItemButton(47, Items.get(Component.text("Create MyCourt").color(Colour.partix()), Material.EMERALD, 1, " ", "§6Requires: §aVIP Rank", "§6§lCLICK TO CREATE!"), pla -> {
-                    if (!pla.hasPermission("rank.vip")) {
-                        pla.sendMessage("§cYou must be VIP to create a MyCourt!");
-                        pla.playSound(pla.getLocation(), Sound.ENTITY_VILLAGER_NO, SoundCategory.MASTER, 1.0f, 1.0f);
-                        return;
-                    }
-                    if (games.stream().anyMatch(g -> g.owner != null && g.owner.equals(pla.getUniqueId()))) {
-                        pla.playSound(pla.getLocation(), Sound.ENTITY_ARMOR_STAND_BREAK, SoundCategory.MASTER, 100.0f, 1.0f);
-                        pla.sendMessage(Message.alreadyCreatedGame());
-                        return;
-                    }
-                    this.attemptJoin(AthleteManager.get(pla.getUniqueId()), athletes -> {
-                        BasketballGame game = Hub.basketballLobby.findAvailableGame(true);
-                        if (game == null) {
-                            pla.sendMessage("§cNo custom courts available right now! Please try again later.");
-                            pla.playSound(pla.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, SoundCategory.MASTER, 1.0f, 1.0f);
-                            pla.closeInventory();
-                            return;
+            new GUI("Custom Games > Select Type", 3, true,
+                    new ItemButton(11, Items.get(Component.text("Basketball").color(Colour.partix()), Material.SLIME_BALL), p -> {
+                        List<BasketballGame> games = Hub.basketballLobby.getGames().stream().filter(g -> g.owner != null).toList();
+                        ItemButton[] buttons = new ItemButton[49];
+
+                        if (!games.isEmpty()) {
+                            for (int x = 0; x < 45; ++x) {
+                                if (x >= games.size()) continue;
+                                BasketballGame g2 = games.get(x);
+                                buttons[x] = new ItemButton(x, Items.getPlayerHead(g2.owner), pl -> {
+                                    Athlete gameAthlete = AthleteManager.get(pl.getUniqueId());
+                                    g2.join(gameAthlete);
+                                    g2.joinTeam(pl, GoalGame.Team.SPECTATOR);
+                                });
+                            }
                         }
-                        game.owner = pla.getUniqueId();
-                        game.join(athletes);
-                        pla.sendMessage(Message.purchaseSuccess("Custom Game Server", 0));
-                    });
-                });
-                buttons[47] = new ItemButton(49, Items.get(Component.text("Create Court").color(Colour.partix()), Material.ENDER_EYE, 1, " ", "§6§lFREE for everyone!", "§6§lCLICK TO CREATE!"), pla -> new GUI("Choose Arena Size", 3, false, new ItemButton(11, Items.get(Component.text("3v3 Arena").color(Colour.partix()), Material.SLIME_BALL, 1, "§7Create a 3v3 Arena"), click -> {
-                    Hub.basketballLobby.createRandomDefaultArenaGame(pla);
-                    pla.closeInventory();
-                }), new ItemButton(15, Items.get(Component.text("4v4 Arena").color(Colour.partix()), Material.SLIME_BALL, 1, "§7Create a 4v4 Arena"), click -> {
-                    Hub.basketballLobby.createRandomDefaultArenaGame4v4(pla);
-                    pla.closeInventory();
-                })).openInventory(pla));
-                buttons[48] = new ItemButton(51, Items.get(Component.text("Arena Selector").color(Colour.partix()), Material.DIAMOND, 1, "§fChoose a basketball arena"), pla -> Hub.basketballLobby.openArenaSelectionGUI(pla));
-                new GUI("Custom Games > Basketball", 6, false, buttons).openInventory(player);
-            }), new ItemButton(13, Items.get(Component.text("Coming Soon").color(Colour.partix()), Material.BARRIER), p -> p.sendMessage("Coming soon")), new ItemButton(15, Items.get(Component.text("Coming Soon").color(Colour.partix()), Material.BARRIER), p -> p.sendMessage("Coming soon"))).openInventory(player);
+
+                        // ✅ REMOVED VIP REQUIREMENT - MyCourts now FREE!
+                        buttons[46] = new ItemButton(47, Items.get(
+                                Component.text("Create MyCourt").color(Colour.partix()),
+                                Material.EMERALD, 1,
+                                " ",
+                                "§a§lFREE for everyone!",
+                                "§6§lCLICK TO CREATE!"
+                        ), pla -> {
+                            if (games.stream().anyMatch(g -> g.owner != null && g.owner.equals(pla.getUniqueId()))) {
+                                pla.playSound(pla.getLocation(), Sound.ENTITY_ARMOR_STAND_BREAK, SoundCategory.MASTER, 100.0f, 1.0f);
+                                pla.sendMessage(Message.alreadyCreatedGame());
+                                return;
+                            }
+                            this.attemptJoin(AthleteManager.get(pla.getUniqueId()), athletes -> {
+                                BasketballGame game = Hub.basketballLobby.findAvailableGame(true);
+                                if (game == null) {
+                                    pla.sendMessage("§cNo custom courts available right now! Please try again later.");
+                                    pla.playSound(pla.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, SoundCategory.MASTER, 1.0f, 1.0f);
+                                    pla.closeInventory();
+                                    return;
+                                }
+                                game.owner = pla.getUniqueId();
+                                game.join(athletes);
+                                pla.sendMessage(Message.purchaseSuccess("Custom Game Server", 0));
+                            });
+                        });
+
+                        buttons[47] = new ItemButton(49, Items.get(
+                                Component.text("Create Court").color(Colour.partix()),
+                                Material.ENDER_EYE, 1,
+                                " ",
+                                "§6§lFREE for everyone!",
+                                "§6§lCLICK TO CREATE!"
+                        ), pla -> new GUI("Choose Arena Size", 3, false,
+                                new ItemButton(11, Items.get(
+                                        Component.text("3v3 Arena").color(Colour.partix()),
+                                        Material.SLIME_BALL, 1,
+                                        "§7Create a 3v3 Arena"
+                                ), click -> {
+                                    Hub.basketballLobby.createRandomDefaultArenaGame(pla);
+                                    pla.closeInventory();
+                                }),
+                                new ItemButton(15, Items.get(
+                                        Component.text("4v4 Arena").color(Colour.partix()),
+                                        Material.SLIME_BALL, 1,
+                                        "§7Create a 4v4 Arena"
+                                ), click -> {
+                                    Hub.basketballLobby.createRandomDefaultArenaGame4v4(pla);
+                                    pla.closeInventory();
+                                })
+                        ).openInventory(pla));
+
+                        buttons[48] = new ItemButton(51, Items.get(
+                                Component.text("Arena Selector").color(Colour.partix()),
+                                Material.DIAMOND, 1,
+                                "§fChoose a basketball arena"
+                        ), pla -> Hub.basketballLobby.openArenaSelectionGUI(pla));
+
+                        new GUI("Custom Games > Basketball", 6, false, buttons).openInventory(player);
+                    }),
+                    new ItemButton(13, Items.get(Component.text("Coming Soon").color(Colour.partix()), Material.BARRIER), p -> p.sendMessage("Coming soon")),
+                    new ItemButton(15, Items.get(Component.text("Coming Soon").color(Colour.partix()), Material.BARRIER), p -> p.sendMessage("Coming soon"))
+            ).openInventory(player);
         }
         if (itemStack.getType().equals(Material.EMERALD)) {
             new GUI("Daily Item Shop | " + ItemShop.getTimeRemaining(), 5, true, new ItemButton(11, ItemShop.defaultTrail.getGUIItem(), p -> {

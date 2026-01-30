@@ -164,6 +164,13 @@ public class Cosmetics {
         explosions.put(47, new CosmeticParticle("explosion.quartz", Material.QUARTZ_BLOCK, "Quartz Gleam Explosion", CosmeticRarity.LEGENDARY, ParticleSet.of(Particle.DUST, Color.fromRGB(0xFFFFFF)), ParticleSet.of(Particle.FLASH)));
         explosions.put(52, new CosmeticParticle("explosion.prismarine", Material.PRISMARINE, "Prismarine Surge Explosion", CosmeticRarity.RARE, ParticleSet.of(Particle.DUST, Color.fromRGB(52945)), ParticleSet.of(Particle.FLAME)));
         explosions.put(53, new CosmeticParticle("explosion.blueorange", Material.BLUE_CONCRETE, "Blue & Orange Explosion", CosmeticRarity.LEGENDARY, ParticleSet.of(Particle.DUST, Color.BLUE), ParticleSet.of(Particle.DUST, Color.ORANGE)));
+        
+        // Season Pass Explosions
+        explosions.put(48, new CosmeticParticle("explosion.frostbite", Material.ICE, "§bFrostbite Explosion", CosmeticRarity.EPIC, ParticleSet.of(Particle.DUST, Color.fromRGB(150, 220, 255)), ParticleSet.of(Particle.SNOWFLAKE), ParticleSet.of(Particle.FIREWORK)));
+        explosions.put(49, new CosmeticParticle("explosion.goldenburst", Material.GOLD_BLOCK, "§eGolden Burst", CosmeticRarity.RARE, ParticleSet.of(Particle.DUST, Color.fromRGB(255, 215, 0)), ParticleSet.of(Particle.FIREWORK), ParticleSet.of(Particle.END_ROD)));
+        explosions.put(50, new CosmeticParticle("explosion.cosmic", Material.END_CRYSTAL, "§9Cosmic Explosion", CosmeticRarity.LEGENDARY, ParticleSet.of(Particle.DUST, Color.fromRGB(138, 43, 226)), ParticleSet.of(Particle.FIREWORK), ParticleSet.of(Particle.END_ROD), ParticleSet.of(Particle.ENCHANT)));
+        explosions.put(54, new CosmeticParticle("explosion.galaxy", Material.END_ROD, "§5Galaxy Explosion", CosmeticRarity.EPIC, ParticleSet.of(Particle.DUST, Color.fromRGB(72, 61, 139)), ParticleSet.of(Particle.DUST, Color.fromRGB(147, 112, 219)), ParticleSet.of(Particle.FIREWORK), ParticleSet.of(Particle.ENCHANT)));
+        
         for (Map.Entry<Integer, CosmeticParticle> entry : explosions.entrySet()) {
             CosmeticParticle explosion = entry.getValue();
             if (explosion.getKey() == null || explosion.getKey().isEmpty()) {
@@ -223,6 +230,11 @@ public class Cosmetics {
         greenSounds.put(36, new CosmeticSound("greensound.tacobell", Material.TOTEM_OF_UNDYING, "§l§6Taco Bell", "Tacos", CosmeticRarity.RARE, "greensound.tacobell", "partix.sound.tacobell"));
         greenSounds.put(37, new CosmeticSound("greensound.majestic", Material.END_CRYSTAL, "§d§lMajestic", "She know what she wanted", CosmeticRarity.EPIC, "greensound.majestic", "partix.sound.majestic"));
         greenSounds.put(38, new CosmeticSound("greensound.buhg", Material.BEDROCK, "§d§lBaby Keem", "Buhg", CosmeticRarity.EPIC, "greensound.babykeem", "partix.sound.buhg"));
+        greenSounds.put(39, new CosmeticSound("greensound.remmysound", Material.END_ROD, "§l§5Remmy", "Remmy's signature sound", CosmeticRarity.LEGENDARY, "greensound.remmysound", "partix.sound.remmysound"));
+        greenSounds.put(40, new CosmeticSound("greensound.imkobe", Material.GOLD_BLOCK, "§l§5IMKOBE", "##### I'M KOBE", CosmeticRarity.LEGENDARY, "greensound.imkobe", "partix.sound.imkobe"));
+        greenSounds.put(41, new CosmeticSound("greensound.kirk", Material.REDSTONE, "§l§5Charlie Kirk", "Charlie Charlie Kirky", CosmeticRarity.LEGENDARY, "greensound.kirk", "partix.sound.kirk"));
+
+
         for (Map.Entry<Integer, CosmeticSound> entry : greenSounds.entrySet()) {
             CosmeticSound sound = entry.getValue();
             if (sound.getMaterial() == null || sound.getMaterial() == Material.AIR) {
@@ -267,6 +279,13 @@ public class Cosmetics {
         ballTrails.put(26, new CosmeticBallTrail("balltrail.phantom", Material.OBSIDIAN, "Phantom Trail", CosmeticRarity.LEGENDARY, "balltrail.phantom"));
         ballTrails.put(27, new CosmeticBallTrail("balltrail.blueorange", Material.LAPIS_BLOCK, "Blue & Orange Ball Trail", CosmeticRarity.RARE, "balltrail.blueorange"));
         ballTrails.put(28, new CosmeticBallTrail("balltrail.lime", Material.LIME_DYE, "Lime Trail", CosmeticRarity.RARE, "balltrail.lime"));
+        
+        // Season Pass Ball Trails
+        ballTrails.put(29, new CosmeticBallTrail("balltrail.supreme", Material.DIAMOND, "Supreme Ball Trail", CosmeticRarity.LEGENDARY, "balltrail.supreme"));
+        ballTrails.put(30, new CosmeticBallTrail("balltrail.phoenix", Material.BLAZE_POWDER, "Phoenix Trail", CosmeticRarity.EPIC, "balltrail.phoenix"));
+        ballTrails.put(31, new CosmeticBallTrail("balltrail.neonpulse", Material.REDSTONE, "Neon Pulse Trail", CosmeticRarity.EPIC, "balltrail.neonpulse"));
+        ballTrails.put(32, new CosmeticBallTrail("balltrail.inferno", Material.FIRE_CHARGE, "Inferno Trail", CosmeticRarity.EPIC, "balltrail.inferno"));
+        ballTrails.put(33, new CosmeticBallTrail("balltrail.emeraldcomet", Material.EMERALD, "Emerald Comet", CosmeticRarity.RARE, "balltrail.emeraldcomet"));
         ballTrails.put(29, new CosmeticBallTrail("balltrail.forest", Material.GREEN_WOOL, "Forest Trail", CosmeticRarity.EPIC, "balltrail.forest"));
         ballTrails.put(30, new CosmeticBallTrail("balltrail.neon", Material.EMERALD, "Neon Green Trail", CosmeticRarity.LEGENDARY, "balltrail.neon"));
         ballTrails.put(31, new CosmeticBallTrail("balltrail.note", Material.NOTE_BLOCK, "Note Trail", CosmeticRarity.COMMON, "balltrail.note"));
@@ -465,7 +484,7 @@ public class Cosmetics {
         return item;
     }
 
-    private static void openPreviewGUIByRarity(Player player, CosmeticRarity rarity, int page) {
+    public static void openPreviewGUIByRarity(Player player, CosmeticRarity rarity, int page) {
         List<CosmeticHolder> cosmetics = Cosmetics.getCosmeticsByRarity(rarity).stream().filter(cosmetic -> !CrateHandler.isExcludedCosmetic(cosmetic)).collect(Collectors.toList());
         if (cosmetics.isEmpty()) {
             player.sendMessage("§cNo cosmetics available for " + rarity.name().toLowerCase() + "!");
@@ -520,7 +539,7 @@ public class Cosmetics {
         }
     }
 
-    private static void openPreviewGUIByType(Player player, String cosmeticType, int page) {
+    public static void openPreviewGUIByType(Player player, String cosmeticType, int page) {
         List<CosmeticHolder> cosmetics = switch (cosmeticType.toLowerCase()) {
             case "trail" -> new ArrayList<>(trails.values());
             case "explosion" -> new ArrayList<>(explosions.values());

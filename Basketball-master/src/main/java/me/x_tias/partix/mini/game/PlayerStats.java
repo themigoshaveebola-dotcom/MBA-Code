@@ -42,6 +42,8 @@ public class PlayerStats {
     private int fg2Attempted;
     @Getter
     private int passAttempts;
+    @Getter
+    private long minutesPlayed; // In milliseconds
 
     public PlayerStats() {
         this.reset();
@@ -127,6 +129,10 @@ public class PlayerStats {
         this.possessionTime += millis;
     }
 
+    public void addMinutesPlayed(long millis) {
+        this.minutesPlayed += millis;
+    }
+
     public void incrementFGMade() {
         ++this.fgMade;
     }
@@ -183,6 +189,7 @@ public class PlayerStats {
         this.fg2Attempted = 0;
         this.passAttempts = 0;
         this.blocks = 0;
+        this.minutesPlayed = 0L;
         this.resetContestTime();
     }
 }

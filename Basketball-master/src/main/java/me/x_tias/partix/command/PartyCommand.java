@@ -12,6 +12,7 @@ import co.aikar.commands.BaseCommand;
 import co.aikar.commands.annotation.CommandAlias;
 import co.aikar.commands.annotation.Default;
 import co.aikar.commands.annotation.Subcommand;
+import co.aikar.commands.annotation.CommandCompletion;
 import me.x_tias.partix.mini.lobby.MainLobby;
 import me.x_tias.partix.plugin.athlete.Athlete;
 import me.x_tias.partix.plugin.athlete.AthleteManager;
@@ -20,6 +21,11 @@ import me.x_tias.partix.plugin.party.PartyFactory;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 
 @CommandAlias(value = "party|p")
 public class PartyCommand
@@ -64,7 +70,18 @@ public class PartyCommand
                                     player.sendMessage("§6Party > §cParty " + args[0] + " is already full! (4/4)");
                                 } else {
                                     int id = party.id;
+
+                                    // Get party leader's name
+                                    Player leader = Bukkit.getPlayer(party.leader);
+                                    String leaderName = leader != null ? leader.getName() : "Unknown";
+
+                                    // Send success message to the joining player
+                                    player.sendMessage("§6Party > §aYou've joined §2" + leaderName + "§a's party!");
+
+                                    // Notify existing party members
                                     party.sendMessage("§6Party > §aWelcome §2" + player.getName() + "§a to the party!");
+
+                                    // Add player to party
                                     athlete.setParty(id);
                                 }
                             } else {
@@ -142,6 +159,7 @@ public class PartyCommand
     }
 
     @Subcommand(value = "invite")
+    @CommandCompletion("@players")
     public void onInvite(CommandSender sender, String[] args) {
         if (sender instanceof Player player) {
             Athlete athlete = AthleteManager.get(player.getUniqueId());
@@ -155,7 +173,20 @@ public class PartyCommand
                     Player p = Bukkit.getPlayer(args[0]);
                     if (p != null) {
                         if (p.isOnline()) {
-                            p.sendMessage("§6Party > §7" + player.getName() + " sent you an invite! §8- §f/party join " + party.id);
+                            // Create clickable message using Adventure API
+                            Component message = Component.text("Party > ", NamedTextColor.GOLD)
+                                    .append(Component.text(player.getName() + " sent you an invite! ", NamedTextColor.GRAY))
+                                    .append(Component.text("[JOIN PARTY]", NamedTextColor.GREEN)
+                                            .decorate(TextDecoration.BOLD)
+                                            .clickEvent(ClickEvent.runCommand("/party join " + party.id))
+                                            .hoverEvent(HoverEvent.showText(
+                                                    Component.text("Click to join ", NamedTextColor.GREEN)
+                                                            .append(Component.text(player.getName(), NamedTextColor.YELLOW))
+                                                            .append(Component.text("'s party!", NamedTextColor.GREEN))
+                                            ))
+                                    );
+
+                            p.sendMessage(message);
                             player.sendMessage("§6Party > §7You have sent " + p.getName() + " this parties join code!");
                         } else {
                             player.sendMessage("§6Party > §7'" + p.getName() + "' is not online!");
@@ -164,7 +195,7 @@ public class PartyCommand
                         player.sendMessage("§6Party > §7Could not find an online player named '" + args[0] + "'");
                     }
                 } else {
-                    party.sendMessage("§6Party > §7You cannot invite someone to the party, although, anyone can use /party join " + party.id + "!");
+                    player.sendMessage("§6Party > §7You cannot invite someone to the party, although, anyone can use /party join " + party.id + "!");
                 }
             } else {
                 player.sendMessage("§6Party > §7You are not in a party!");

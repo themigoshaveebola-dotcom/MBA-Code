@@ -187,7 +187,7 @@ public class PartixCommand
                     Player player;
                     String name = op.getName();
                     String rank = args[1].toLowerCase(Locale.ROOT);
-                    String[] validRanks = new String[]{"admin", "mod", "media", "pro", "vip", "default"};
+                    String[] validRanks = new String[]{"admin", "referee", "coach", "mod", "media", "pro", "vip", "atlantaallays", "brooklynbuckets", "chicagobows", "goldenstateguardians", "lacreepers", "miamimagmacubes", "philadelphia64s", "washingtonwithers", "default"};
                     boolean isValid = false;
                     for (String r : validRanks) {
                         if (!r.equals(rank)) continue;
