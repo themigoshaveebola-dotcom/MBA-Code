@@ -235,6 +235,14 @@ public class MainLobby
                 "§7View your rings & accolades"
         ), p -> this.openAccoladesGUI(p, targetUUID));
 
+        // Cosmetics (moved from main menu to profile)
+        buttons[22] = new ItemButton(22, Items.get(
+                Component.text("Cosmetics").color(Colour.partix()),
+                Material.FIREWORK_STAR,
+                1,
+                "§7Open Cosmetics Menu"
+        ), p -> new CosmeticGUI(p));
+
         new GUI("§l§6Player Profile", 3, false, buttons).openInventory(viewer);
     }
 
@@ -912,37 +920,99 @@ public class MainLobby
     }
 
     public void openServerSelectorGUI(Player player) {
-        int rows = 6;
         int size = 54;
         ItemButton[] buttons = new ItemButton[54];
+        
+        // Initialize all slots with texture paper (model_data 1111)
         for (int i = 0; i < 54; ++i) {
-            buttons[i] = new ItemButton(i, FILLER, p -> {
+            ItemStack textureItem = new ItemStack(Material.PAPER);
+            textureItem.editMeta(meta -> {
+                meta.setCustomModelData(1111);
+                meta.displayName(Component.text(" "));
+            });
+            buttons[i] = new ItemButton(i, textureItem, p -> {});
+        }
+        
+        // Section 1: Park Queue (slots 0-2, 9-11, 18-20)
+        ItemStack parkQueueIcon = new ItemStack(Material.PAPER);
+        parkQueueIcon.editMeta(meta -> {
+            meta.setCustomModelData(1111);
+            meta.displayName(Component.text("§6Park Queue"));
+            meta.lore(List.of(Component.text("§7Join the Park Queue")));
+        });
+        int[] parkSlots = {0, 1, 2, 9, 10, 11, 18, 19, 20};
+        for (int slot : parkSlots) {
+            buttons[slot] = new ItemButton(slot, parkQueueIcon, p -> Hub.basketballLobby.openGameSelectorGUI(p));
+        }
+        
+        // Section 2: Rec Center (slots 3-5, 12-14, 21-23)
+        ItemStack recIcon = new ItemStack(Material.PAPER);
+        recIcon.editMeta(meta -> {
+            meta.setCustomModelData(1111);
+            meta.displayName(Component.text("§6Rec Center"));
+            meta.lore(List.of(
+                Component.text("§74 Quarter Games (4 min each)"),
+                Component.text("§7Bigger rewards!"),
+                Component.text("§73v3 matches only")
+            ));
+        });
+        int[] recSlots = {3, 4, 5, 12, 13, 14, 21, 22, 23};
+        for (int slot : recSlots) {
+            buttons[slot] = new ItemButton(slot, recIcon, p -> {
+                Athlete athlete = AthleteManager.get(p.getUniqueId());
+                Hub.recLobby.join(athlete);
             });
         }
-        ItemStack rankedIcon = Items.get(Component.text("Park Queue").color(Colour.partix()), Material.DIAMOND_SWORD, 1, "§7Join the Park Queue");
-        rankedIcon.editMeta(m -> m.addItemFlags(ItemFlag.HIDE_ATTRIBUTES));
-        this.registerFramed(buttons, 10, rankedIcon, p -> Hub.basketballLobby.openGameSelectorGUI(p));
         
-        // Add Rec Center button
-        ItemStack recIcon = Items.get(Component.text("Rec Center").color(Colour.partix()), Material.DIAMOND, 1, "§74 Quarter Games (4 min each)", "§7Bigger rewards!", "§73v3 matches only");
-        this.registerFramed(buttons, 12, recIcon, p -> {
-            Athlete athlete = AthleteManager.get(p.getUniqueId());
-            Hub.recLobby.join(athlete);
+        // Section 3: My Court (slots 6-8, 15-17, 24-26)
+        ItemStack myCourtIcon = new ItemStack(Material.PAPER);
+        myCourtIcon.editMeta(meta -> {
+            meta.setCustomModelData(1111);
+            meta.displayName(Component.text("§6My Court"));
+            meta.lore(List.of(Component.text("§7Create or join custom games")));
         });
+        int[] myCourtSlots = {6, 7, 8, 15, 16, 17, 24, 25, 26};
+        for (int slot : myCourtSlots) {
+            buttons[slot] = new ItemButton(slot, myCourtIcon, p -> this.openCustomGamesGUI(p));
+        }
         
-        this.registerFramed(buttons, 14, this.createIcon(Material.SLIME_BALL, Component.text("Custom Games").color(Colour.partix()), "§7Select a custom game"), this::openCustomGamesGUI);
-        ItemStack profileHead = new ItemStack(Material.PLAYER_HEAD);
-        profileHead.editMeta(meta -> {
-            SkullMeta sm = (SkullMeta) meta;
-            sm.setOwningPlayer(player);
-            sm.displayName(Component.text("Profile").color(Colour.partix()));
-            sm.lore(List.of(Component.text("§7View your stats & settings")));
+        // Section 4: Profile (slots 27-29, 36-38, 45-47)
+        ItemStack profileIcon = new ItemStack(Material.PAPER);
+        profileIcon.editMeta(meta -> {
+            meta.setCustomModelData(1111);
+            meta.displayName(Component.text("§6Profile"));
+            meta.lore(List.of(Component.text("§7View your stats & settings")));
         });
-        this.registerFramed(buttons, 16, profileHead, p -> this.openPlayerProfileGUI(p));
-        this.registerFramed(buttons, 37, this.createIcon(Material.WRITABLE_BOOK, Component.text("Discord").color(Colour.partix()), "§7Get our Discord link"), p -> p.sendMessage("§aJoin our Discord: §https://discord.gg/yra3gjNRpD"));
-        this.registerFramed(buttons, 40, this.createIcon(Material.EMERALD, Component.text("Server Store").color(Colour.partix()), "§7Visit our Store"), p -> p.sendMessage("§aVisit our Store: §Coming Soon!"));
-        this.registerFramed(buttons, 43, this.createIcon(Material.FIREWORK_STAR, Component.text("Cosmetics").color(Colour.partix()), "§7Open Cosmetics Menu"), p -> new CosmeticGUI(p));
-        new GUI("Server Selector", 6, false, buttons).openInventory(player);
+        int[] profileSlots = {27, 28, 29, 36, 37, 38, 45, 46, 47};
+        for (int slot : profileSlots) {
+            buttons[slot] = new ItemButton(slot, profileIcon, p -> this.openPlayerProfileGUI(p));
+        }
+        
+        // Section 5: Server Store (slots 30-32, 39-41, 48-50)
+        ItemStack storeIcon = new ItemStack(Material.PAPER);
+        storeIcon.editMeta(meta -> {
+            meta.setCustomModelData(1111);
+            meta.displayName(Component.text("§6Server Store"));
+            meta.lore(List.of(Component.text("§7Visit our Store")));
+        });
+        int[] storeSlots = {30, 31, 32, 39, 40, 41, 48, 49, 50};
+        for (int slot : storeSlots) {
+            buttons[slot] = new ItemButton(slot, storeIcon, p -> p.sendMessage("§aVisit our Store: §Coming Soon!"));
+        }
+        
+        // Section 6: Discord (slots 33-35, 42-44, 51-53)
+        ItemStack discordIcon = new ItemStack(Material.PAPER);
+        discordIcon.editMeta(meta -> {
+            meta.setCustomModelData(1111);
+            meta.displayName(Component.text("§6Discord"));
+            meta.lore(List.of(Component.text("§7Get our discord link")));
+        });
+        int[] discordSlots = {33, 34, 35, 42, 43, 44, 51, 52, 53};
+        for (int slot : discordSlots) {
+            buttons[slot] = new ItemButton(slot, discordIcon, p -> p.sendMessage("§aJoin our Discord: §https://discord.gg/yra3gjNRpD"));
+        }
+        
+        new GUI(":offset_-1::menu:", 6, false, buttons).openInventory(player);
     }
 
     private void registerFramed(ItemButton[] btns, int centreSlot, ItemStack icon, Consumer<Player> click) {

@@ -49,6 +49,7 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.event.Listener;
+import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.util.*;
@@ -902,6 +903,13 @@ public class BasketballLobby
             player.sendMessage("§cYou are already in a queue. Leave your current queue before joining another.");
             return;
         }
+        
+        // NEW: Check if player is on a physical queue spot
+        if (playerSpots.containsKey(playerId)) {
+            player.sendMessage("§c§l» §cYou're on a physical queue spot! Leave it first (shift).");
+            return;
+        }
+        
         Party party = PartyFactory.get(athlete.getParty());
         int n = partySize = party != null ? party.count() : 1;
         if (partySize == 2 && mode != 2) {
@@ -1106,34 +1114,100 @@ public class BasketballLobby
     }
 
     public void openGameSelectorGUI(Player player) {
-        int rows = 3;
         int size = 27;
         ItemButton[] buttons = new ItemButton[27];
+        
+        // Create invisible/empty texture item (like main menu uses)
+        ItemStack emptyTexture = new ItemStack(Material.PAPER);
+        emptyTexture.editMeta(meta -> {
+            meta.setCustomModelData(1111);  // Uses the "empty" item from ItemsAdder
+            meta.displayName(Component.text(" "));
+        });
+        
+        // Initialize all slots with invisible texture
         for (int i = 0; i < 27; ++i) {
-            buttons[i] = new ItemButton(i, FILLER_PANE, p -> {
+            buttons[i] = new ItemButton(i, emptyTexture, p -> {});
+        }
+        
+        // Section 1: 1v1 Mode (slots 0-2, 9-11, 18-20) - invisible but clickable
+        Athlete athlete = AthleteManager.get(player.getUniqueId());
+        boolean isQueued = this.isPlayerQueued(athlete);
+        
+        ItemStack mode1v1 = new ItemStack(Material.PAPER);
+        mode1v1.editMeta(meta -> {
+            meta.setCustomModelData(1111);  // Keep invisible
+            if (isQueued) {
+                meta.displayName(Component.text("§l§c⚔ 1v1 Mode §7(In Queue)"));
+                meta.lore(List.of(
+                    Component.text("§7Face off in a 1v1 duel!"),
+                    Component.text(" "),
+                    Component.text("§eQueue: " + this.queue1v1.size() + "/2 players"),
+                    Component.text(" "),
+                    Component.text("§cClick to leave queue")
+                ));
+            } else {
+                meta.displayName(Component.text("§l§c⚔ 1v1 Mode"));
+                meta.lore(List.of(
+                    Component.text("§7Face off in a 1v1 duel!"),
+                    Component.text(" "),
+                    Component.text("§eQueue: " + this.queue1v1.size() + "/2 players")
+                ));
+            }
+        });
+        int[] slots1v1 = {0, 1, 2, 9, 10, 11, 18, 19, 20};
+        for (int slot : slots1v1) {
+            buttons[slot] = new ItemButton(slot, mode1v1, p -> {
+                Athlete a = AthleteManager.get(p.getUniqueId());
+                if (this.isPlayerQueued(a)) {
+                    this.leaveQueue(p);
+                } else {
+                    this.joinQueue(p, 1);
+                }
             });
         }
-        // Only show 1v1 option - 2v2 and 3v3 now use physical spots at courts
-        this.registerFramed(buttons, 13, this.icon(Material.IRON_INGOT, Component.text("§l§c⚔ 1v1 Mode"), "§7Face off in a 1v1 duel!", " ", "§eQueue: " + this.queue1v1.size() + "/2 players"), p -> this.joinQueue(p, 1));
         
-        // Add info about physical queue spots
-        buttons[11] = new ItemButton(11, this.icon(Material.GOLD_INGOT, Component.text("§l§62v2 Park Queue"), "§7Stand on a spot at a 2v2 court!", "§7Find the courts with colored particles", "§7§oGreen = Occupied, Red = Available"), p -> {
-            p.sendMessage("§a§l» §aHead to the 2v2 courts and stand on a spot!");
-            p.sendMessage("§7Courts are marked with particle effects.");
-            p.closeInventory();
+        // Section 2: 2v2 Mode (slots 3-5, 12-14, 21-23)
+        ItemStack mode2v2 = new ItemStack(Material.PAPER);
+        mode2v2.editMeta(meta -> {
+            meta.setCustomModelData(1111);  // Keep invisible
+            meta.displayName(Component.text("§l§62v2 Park Queue"));
+            meta.lore(List.of(
+                Component.text("§7Stand on a spot at a 2v2 court!"),
+                Component.text("§7Find the courts with colored particles"),
+                Component.text("§7§oGreen = Occupied, Red = Available")
+            ));
         });
-        
-        buttons[15] = new ItemButton(15, this.icon(Material.DIAMOND, Component.text("§l§b3v3 Park Queue"), "§7Stand on a spot at a 3v3 court!", "§7Find the courts with colored particles", "§7§oGreen = Occupied, Red = Available"), p -> {
-            p.sendMessage("§a§l» §aHead to the 3v3 courts and stand on a spot!");
-            p.sendMessage("§7Courts are marked with particle effects.");
-            p.closeInventory();
-        });
-        
-        Athlete athlete = AthleteManager.get(player.getUniqueId());
-        if (this.isPlayerQueued(athlete)) {
-            buttons[22] = new ItemButton(22, this.icon(Material.BARRIER, Component.text("§cLeave Queue"), "§7Click to leave the queue"), this::leaveQueue);
+        int[] slots2v2 = {3, 4, 5, 12, 13, 14, 21, 22, 23};
+        for (int slot : slots2v2) {
+            buttons[slot] = new ItemButton(slot, mode2v2, p -> {
+                p.sendMessage("§a§l» §aHead to the 2v2 courts and stand on a spot!");
+                p.sendMessage("§7Courts are marked with particle effects.");
+                p.closeInventory();
+            });
         }
-        new GUI("§l§6Game Selector", 3, false, buttons).openInventory(player);
+        
+        // Section 3: 3v3 Mode (slots 6-8, 15-17, 24-26)
+        ItemStack mode3v3 = new ItemStack(Material.PAPER);
+        mode3v3.editMeta(meta -> {
+            meta.setCustomModelData(1111);  // Keep invisible
+            meta.displayName(Component.text("§l§b3v3 Park Queue"));
+            meta.lore(List.of(
+                Component.text("§7Stand on a spot at a 3v3 court!"),
+                Component.text("§7Find the courts with colored particles"),
+                Component.text("§7§oGreen = Occupied, Red = Available")
+            ));
+        });
+        int[] slots3v3 = {6, 7, 8, 15, 16, 17, 24, 25, 26};
+        for (int slot : slots3v3) {
+            buttons[slot] = new ItemButton(slot, mode3v3, p -> {
+                p.sendMessage("§a§l» §aHead to the 3v3 courts and stand on a spot!");
+                p.sendMessage("§7Courts are marked with particle effects.");
+                p.closeInventory();
+            });
+        }
+        
+        // Use font image in title like main menu
+        new GUI(":ranked_hud:", 3, false, buttons).openInventory(player);
     }
 
     @EventHandler
@@ -1401,6 +1475,16 @@ public class BasketballLobby
             for (CourtQueue court : threesCourts) {
                 court.spawnAllParticles();
             }
+            
+            // Set y velocity to 0 for all players on spots to prevent jumping/falling
+            for (Map.Entry<UUID, CourtSpot> entry : playerSpots.entrySet()) {
+                Player player = Bukkit.getPlayer(entry.getKey());
+                if (player != null && player.isOnline()) {
+                    Vector velocity = player.getVelocity();
+                    velocity.setY(0);
+                    player.setVelocity(velocity);
+                }
+            }
         }, 0L, 2L); // Run every 2 ticks (0.1 seconds) for more consistent visual effect
     }
     
@@ -1450,6 +1534,12 @@ public class BasketballLobby
                 if (currentGame.getState() != GoalGame.State.FINAL) {
                     return;
                 }
+            }
+            
+            // NEW: Check if player is already in another queue (1v1)
+            if (this.isPlayerQueued(athlete)) {
+                player.sendMessage("§c§l» §cYou're already in another queue! Leave it first.");
+                return;
             }
             
             // Check if it's a party spot - enforce party requirements

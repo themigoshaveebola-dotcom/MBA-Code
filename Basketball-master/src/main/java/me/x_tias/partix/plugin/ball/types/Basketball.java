@@ -47,6 +47,13 @@ import java.util.*;
 public class Basketball
         extends me.x_tias.partix.plugin.ball.Ball {
     private static final int STEAL_IMMUNITY_DURATION = 20;
+    
+    // Shot Make Formula Constants
+    private static final double CONTEST_STRENGTH = 0.7;
+    private static final double GREEN_WINDOW_THRESHOLD = 0.03;  // 3% timing error tolerance
+    private static final int PERFECT_TIMING_MIN = 7;  // accuracy 7-8 = green
+    private static final double LIGHT_CONTEST_THRESHOLD = 0.2;  // 20% contest or less
+    
     @Getter
     private final BasketballGame game;
     private final Map<UUID, Integer> contestTime = new HashMap<>();
@@ -901,128 +908,46 @@ public class Basketball
         // CAPTURE SHOT DISTANCE AT TIME OF SHOT
         this.shotDistance = player.getLocation().distance(targetHoop);
 
-        // ========== IMPROVED SHOT SUCCESS LOGIC ==========
+        // ========== NEW SHOT FORMULA ==========
         boolean perfect = false;
         this.guaranteedMiss = false;
         this.shouldPreventScore = false;
 
-        // CHECK FOR 90%+ CONTEST FIRST
-        if (this.shotContestPercentage >= 0.90) {
-            perfect = false;
+        // Use the new formula to calculate shot success
+        boolean shotMade = calculateShotMake(
+            this.accuracy,                    // Meter accuracy (0-8)
+            this.shotContestPercentage,       // Contest value (0.0-1.0)
+            this.shotDistance,                // Distance to hoop
+            this.isLayupAttempt,              // Is this a layup?
+            isMovingShot                      // Is player moving?
+        );
+
+        if (shotMade) {
+            perfect = true;
+        } else {
             this.guaranteedMiss = true;
             this.shouldPreventScore = true;
-            this.currentShotMissType = MissType.SMOTHERED;
-            player.sendMessage(Component.text("SMOTHERED DEFENSE!").color(Colour.deny()).decorate(TextDecoration.BOLD));
-        }
-        // CHECK FOR HEAVY CONTEST (65-90%)
-        else if (this.shotContestPercentage >= 0.65) {
-            perfect = false;
-            this.guaranteedMiss = true;
-            this.shouldPreventScore = true;
-            this.currentShotMissType = MissType.CONTESTED;
-            player.sendMessage(Component.text("HEAVILY CONTESTED!").color(Colour.deny()).decorate(TextDecoration.BOLD));
-        }
-        // LAYUP LOGIC
-        else if (this.isLayupAttempt) {
-            if (this.accuracy >= 3) {
-                perfect = true;
-            } else if (this.accuracy >= 1) {
-                perfect = Math.random() <= 0.50;
-                if (!perfect) {
-                    this.guaranteedMiss = true;
-                    this.shouldPreventScore = true;
-                    this.currentShotMissType = MissType.YELLOW_LAYUP;
-                }
-            } else {
-                perfect = Math.random() <= 0.10;
-                if (!perfect) {
-                    this.guaranteedMiss = true;
-                    this.shouldPreventScore = true;
-                    this.currentShotMissType = MissType.RED_LAYUP;
-                }
-            }
-        }
-        // Normal range shots (0-24 blocks)
-        else if (distanceToHoop <= 25 && this.shotContestPercentage < greenThreshold) {
-            if (this.accuracy >= distanceZone.getRequiredGreenAccuracy()) {
-                perfect = true;
-            } else if (this.accuracy >= distanceZone.getYellowAccuracyStart()) {
-                double yellowChance = isMovingShot ? 0.15 : 0.25;
-                perfect = Math.random() <= yellowChance;
-                if (!perfect) {
-                    this.guaranteedMiss = true;
-                    this.shouldPreventScore = true;
-                    this.currentShotMissType = this.accuracy >= 4 ? MissType.YELLOW_SHOT : MissType.RED_SHOT;
-                }
-            } else {
-                double redChance = isMovingShot ? 0.01 : 0.02;
-                perfect = Math.random() <= redChance;
-                if (!perfect) {
-                    this.guaranteedMiss = true;
-                    this.shouldPreventScore = true;
-                    this.currentShotMissType = MissType.RED_SHOT;
-                }
-            }
-        }
-        // Deep range (24-27 blocks)
-        else if (distanceToHoop > 24 && distanceToHoop <= 27 && this.shotContestPercentage < greenThreshold) {
-            // CHANGE THIS SECTION - Add distance-based threshold override
-
-            // NEW: Override greenThreshold for deep shots based on shot type
-            double deepShotThreshold;
-            if (isMovingShot) {
-                deepShotThreshold = 0.25; // 25% for off-dribble deep shots
-            } else {
-                deepShotThreshold = 0.35; // 35% for standing deep shots
-            }
-
-            // Use the deep shot threshold instead of the regular greenThreshold
-            if (this.shotContestPercentage >= deepShotThreshold) {
-                perfect = false;
-                this.guaranteedMiss = true;
-                this.shouldPreventScore = true;
-                this.currentShotMissType = MissType.DEEP_SHOT;
-                player.sendMessage(Component.text("Deep Shot").color(Colour.deny()));
-            } else if (this.accuracy == 8) {
-                double deepGreenChance = isMovingShot ? 0.06 : 0.10;
-                perfect = Math.random() <= deepGreenChance;
-                if (!perfect) {
-                    this.guaranteedMiss = true;
-                    this.shouldPreventScore = true;
-                    this.currentShotMissType = MissType.DEEP_SHOT;
-                }
-            } else if (this.accuracy >= distanceZone.getYellowAccuracyStart()) {
-                double deepYellowChance = isMovingShot ? 0.005 : 0.01;
-                perfect = Math.random() <= deepYellowChance;
-                if (!perfect) {
-                    this.guaranteedMiss = true;
-                    this.shouldPreventScore = true;
-                    this.currentShotMissType = MissType.DEEP_SHOT;
-                }
-            } else {
-                perfect = Math.random() <= 0.001;
-                if (!perfect) {
-                    this.guaranteedMiss = true;
-                    this.shouldPreventScore = true;
-                    this.currentShotMissType = MissType.DEEP_SHOT;
-                }
-            }
-
-            if (!perfect) {
-                player.sendMessage(Component.text("Deep Shot").color(Colour.deny()));
-            }
-        }
-        // Way too deep (27+ blocks) OR heavily contested (45-65%)
-        else if (distanceToHoop > 27 || this.shotContestPercentage >= 0.45) {
-            perfect = false;
-            this.guaranteedMiss = true;
-            this.shouldPreventScore = true;
-            if (distanceToHoop > 27) {
-                this.currentShotMissType = MissType.TOO_DEEP;
-                player.sendMessage(Component.text("Too deep!").color(Colour.deny()));
-            } else {
+            
+            // Determine miss type for feedback
+            if (this.shotContestPercentage >= 0.90) {
+                this.currentShotMissType = MissType.SMOTHERED;
+                player.sendMessage(Component.text("SMOTHERED DEFENSE!").color(Colour.deny()).decorate(TextDecoration.BOLD));
+            } else if (this.shotContestPercentage >= 0.65) {
+                this.currentShotMissType = MissType.CONTESTED;
+                player.sendMessage(Component.text("HEAVILY CONTESTED!").color(Colour.deny()).decorate(TextDecoration.BOLD));
+            } else if (this.shotContestPercentage >= 0.45) {
                 this.currentShotMissType = MissType.CONTESTED;
                 player.sendMessage(Component.text("CONTESTED!").color(Colour.deny()));
+            } else if (distanceToHoop > 27) {
+                this.currentShotMissType = MissType.TOO_DEEP;
+                player.sendMessage(Component.text("Too deep!").color(Colour.deny()));
+            } else if (distanceToHoop > 24) {
+                this.currentShotMissType = MissType.DEEP_SHOT;
+                player.sendMessage(Component.text("Deep Shot").color(Colour.deny()));
+            } else if (this.isLayupAttempt) {
+                this.currentShotMissType = this.accuracy >= 1 ? MissType.YELLOW_LAYUP : MissType.RED_LAYUP;
+            } else {
+                this.currentShotMissType = this.accuracy >= 4 ? MissType.YELLOW_SHOT : MissType.RED_SHOT;
             }
         }
 
@@ -3549,32 +3474,111 @@ public class Basketball
         return distX <= radius && distY <= radius && distZ <= thickness;
     }
 
+    /**
+     * Convert meter accuracy (0-8 scale) to timing error (0.0-1.0 scale)
+     * Green (7-8): 0.0 - 0.03 error
+     * Yellow (4-6): 0.04 - 0.35 error
+     * Red (0-3): 0.36 - 1.0 error
+     */
+    private double calculateTimingError(int meterAccuracy) {
+        if (meterAccuracy >= 7) {
+            // Green window - minimal error
+            return (8 - meterAccuracy) * 0.015;  // 7→0.015, 8→0.0
+        } else if (meterAccuracy >= 4) {
+            // Yellow window - moderate error
+            return 0.04 + ((6 - meterAccuracy) * 0.105);  // 6→0.04, 4→0.25
+        } else {
+            // Red window - heavy error
+            return 0.36 + ((3 - meterAccuracy) * 0.21);  // 3→0.36, 0→1.0
+        }
+    }
+    
+    /**
+     * Get base shot make chance based on distance and shot type
+     */
+    private double getBaseShotChance(double distance, boolean isLayup, boolean isMoving) {
+        if (isLayup) {
+            return 0.85;  // Open layup
+        }
+        
+        if (distance <= 10.0) {
+            // Close range / paint
+            return 0.80;
+        } else if (distance <= 15.0) {
+            // Midrange
+            return isMoving ? 0.68 : 0.75;
+        } else if (distance <= 22.0) {
+            // Three point range
+            return isMoving ? 0.50 : 0.60;
+        } else {
+            // Deep three / logo shot
+            return isMoving ? 0.35 : 0.45;
+        }
+    }
+    
+    /**
+     * Calculate if shot should go in using new formula
+     * Formula: FinalChance = Base * (1 - Contest*0.7) * (1 - TimingError²)
+     * Perfect timing rule: Green + lightly contested = high% (scaled by distance)
+     */
+    private boolean calculateShotMake(int meterAccuracy, double contestPercentage, 
+                                      double distance, boolean isLayup, boolean isMoving) {
+        // Step 1: Get inputs
+        double baseChance = getBaseShotChance(distance, isLayup, isMoving);
+        double timingError = calculateTimingError(meterAccuracy);
+        
+        // Step 2: Calculate multipliers
+        double contestMultiplier = 1.0 - (contestPercentage * CONTEST_STRENGTH);
+        double timingMultiplier = 1.0 - (timingError * timingError);  // Square the error
+        
+        // Step 3: Calculate final chance
+        double finalChance = baseChance * contestMultiplier * timingMultiplier;
+        finalChance = Math.max(0.0, Math.min(finalChance, 0.95));  // Clamp to [0.0, 0.95]
+        
+        // Step 4: Perfect timing rule (green + lightly contested) - DISTANCE SCALED
+        if (timingError <= GREEN_WINDOW_THRESHOLD && contestPercentage <= LIGHT_CONTEST_THRESHOLD) {
+            // Scale perfect timing bonus by distance
+            if (isLayup || distance <= 10.0) {
+                finalChance = 0.98;  // Close range: near-guaranteed
+            } else if (distance <= 15.0) {
+                finalChance = 0.92;  // Midrange: very high
+            } else if (distance <= 22.0) {
+                finalChance = 0.90;  // Normal three: very high
+            } else if (distance <= 27.0) {
+                finalChance = 0.70;  // Deep three: good but risky
+            } else {
+                finalChance = 0.55;  // Logo range: still tough even on green
+            }
+        }
+        
+        // Debug logging
+        System.out.println("[SHOT CALC] Distance: " + String.format("%.2f", distance) + 
+                         " | Base: " + String.format("%.2f", baseChance * 100) + "%" +
+                         " | Contest: " + String.format("%.2f", contestPercentage * 100) + "%" +
+                         " | Timing: " + meterAccuracy + "/8" +
+                         " | Final: " + String.format("%.2f", finalChance * 100) + "%");
+        
+        // Step 5: Roll the dice
+        return Math.random() < finalChance;
+    }
+
     private boolean calculateDunkSuccessWithMeter(int accuracy, DunkContestResult contestResult) {
         double contestPercentage = contestResult.getContestValue();
 
-        // Green window: 7-8 (HARDER - only top 2 values)
-        boolean greenRelease = accuracy >= 7 && accuracy <= 8;
-        // Yellow window: 4-6 (expanded to compensate)
-        boolean yellowRelease = accuracy >= 4 && accuracy <= 6;
-        // Red: 0-3 (same)
-
-        double successChance;
-        if (greenRelease) {
-            // Green: 100% base, MORE heavily reduced by contest (BUFFED)
-            successChance = 1.0 - (contestPercentage * 0.80); // BUFFED from 0.70
-
-            if (contestResult.shouldPosterize()) {
-                successChance = 1.0; // Guaranteed on posterizer
-            }
-        } else if (yellowRelease) {
-            // Yellow: 60% base, MORE heavily reduced by contest (BUFFED)
-            successChance = 0.60 - (contestPercentage * 0.65); // BUFFED from 0.55
-        } else {
-            // Red: 20% base, MORE heavily reduced by contest (BUFFED)
-            successChance = 0.20 - (contestPercentage * 0.50); // BUFFED from 0.40
+        // Use new shot formula for dunks
+        // Dunks are treated as very close range shots (distance ~2.0)
+        boolean isMoving = this.getCurrentDamager() != null && 
+                          this.getCurrentDamager().getVelocity().length() > 0.2;
+        
+        // Use new formula (dunks count as super close shots)
+        boolean shouldMake = calculateShotMake(accuracy, contestPercentage, 2.0, false, isMoving);
+        
+        // Posterizer override - guaranteed make
+        if (contestResult.shouldPosterize()) {
+            shouldMake = true;
         }
-
-        return Math.random() < successChance;
+        
+        return shouldMake;
     }
     private BlockResult checkForDunkBlock(Player dunker) {
         if (game == null) return new BlockResult(false, null);
